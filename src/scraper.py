@@ -1,6 +1,10 @@
 import requests
 
-API_URL = "https://api.mercadolibre.com/sites/MLB/trends/MLB1051"
+# Categoria de eletrônicos como exemplo
+# (Podemos adicionar várias depois)
+CATEGORY_ID = "MLB1051"  # TVs, vídeo e áudio
+
+API_URL = f"https://api.mercadolibre.com/highlights/MLB/category/{CATEGORY_ID}"
 
 def get_best_sellers():
     try:
@@ -10,12 +14,26 @@ def get_best_sellers():
         print("[DEBUG] Erro na API:", e)
         return []
 
-    products = []
-    for item in data[:20]:  # limita para evitar spam
-        title = item.get("keyword")
-        link = item.get("url")
+    results = []
+
+    # A API retorna assim:
+    # {
+    #   "content": {
+    #       "top_selling": [ { "id": "...", "title": "...", "permalink": "..."}, ... ]
+    #   }
+    # }
+
+    top = data.get("content", {}).get("top_selling", [])
+
+    for item in top[:20]:
+        title = item.get("title")
+        link = item.get("permalink")
 
         if title and link:
-            products.append({"name": title, "link": link})
+            results.append({
+                "name": title,
+                "link": link
+            })
 
-    return products
+    print(f"[DEBUG] Produtos coletados da API: {len(results)}")
+    return results
