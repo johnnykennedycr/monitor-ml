@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 URL_BEST_SELLERS = "https://www.mercadolivre.com.br/mais-vendidos"
 
 def get_best_sellers():
-    response = requests.get(URL_BEST_Sellers, headers={"User-Agent": "Mozilla/5.0"})
+    response = requests.get(URL_BEST_SELLERS, headers={"User-Agent": "Mozilla/5.0"})
     soup = BeautifulSoup(response.text, "html.parser")
 
     products = []
