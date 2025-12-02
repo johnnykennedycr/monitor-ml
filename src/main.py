@@ -1,8 +1,8 @@
-import json
-import os
-from .scraper import get_best_sellers
-from .affiliate import generate_affiliate_link
-from .notifier import send_telegram
+import os, sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from scraper import get_best_sellers
+from affiliate import generate_affiliate_link
+from notifier import send_telegram
 
 print("[DEBUG] Iniciando script...")
 
