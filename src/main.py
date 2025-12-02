@@ -1,4 +1,4 @@
-import os, sys
+import os, sys, json
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from scraper import get_best_sellers
 from affiliate import generate_affiliate_link
