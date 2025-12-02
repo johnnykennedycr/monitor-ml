@@ -1,15 +1,18 @@
 import json
-from scraper import get_best_sellers
-from affiliate import generate_affiliate_link
-from notifier import send_telegram
 import os
+from .scraper import get_best_sellers
+from .affiliate import generate_affiliate_link
+from .notifier import send_telegram
 
-DATABASE_FILE = "src/database.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATABASE_FILE = os.path.join(BASE_DIR, "database.json")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def load_db():
+    if not os.path.exists(DATABASE_FILE):
+        return []
     try:
         with open(DATABASE_FILE, "r") as f:
             return json.load(f)

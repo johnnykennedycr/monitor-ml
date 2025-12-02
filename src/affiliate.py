@@ -1,22 +1,23 @@
 import requests
-import json
 
 AFFILIATE_TAG = "tepa6477885"
 
 def generate_affiliate_link(url):
-    # transforma qualquer link em link afiliado
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
 
     payload = {
-        "urls": [url],
-        "tag": AFFILIATE_TAG
+        "tag": AFFILIATE_TAG,
+        "urls": [url]
     }
 
     try:
-        response = requests.post(api_url, json=payload)
-        data = response.json()
+        r = requests.post(api_url, json=payload)
+        data = r.json()
 
-        return data["links"][0]["url"]
+        if "links" in data and len(data["links"]) > 0:
+            return data["links"][0]["url"]
+
+        return f"{url}?matt_word={AFFILIATE_TAG}"
+
     except:
-        # fallback: adiciona tag manualmente
         return f"{url}?matt_word={AFFILIATE_TAG}"
