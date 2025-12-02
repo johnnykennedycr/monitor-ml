@@ -1,52 +1,84 @@
 import requests
+import time
+import random
 
-# Categoria de Eletrônicos, Áudio e Vídeo (MLB1000 é a raiz de eletrônicos, MLB1051 é Celulares)
-# Você pode mudar para uma busca por termo se preferir.
-CATEGORY_ID = "MLB1051" 
+# Categoria de Celulares e Telefones (MLB1051)
+CATEGORY_ID = "MLB1051"
 API_URL = "https://api.mercadolibre.com/sites/MLB/search"
 
 def get_best_sellers():
-    # Parâmetros para buscar os mais relevantes/vendidos na categoria
-    params = {
-        "category": CATEGORY_ID,
-        "sort": "relevance",  # Traz os mais relevantes (geralmente os mais vendidos)
-        "limit": 20           # Limita a 20 resultados
+    """
+    Busca produtos usando headers avançados para simular um navegador real
+    e evitar o erro 403 (Forbidden).
+    """
+    
+    # 1. Configura uma Sessão (ajuda a manter cookies e parece mais humano)
+    session = requests.Session()
+
+    # 2. Headers Completos (Copiados de um navegador Chrome real)
+    # Isso é CRUCIAL para não tomar bloqueio 403
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.mercadolivre.com.br/",
+        "Origin": "https://www.mercadolivre.com.br",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
     }
 
-    # Headers são obrigatórios para evitar bloqueio (erro 403 ou lista vazia)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    # Parâmetros de busca
+    params = {
+        "category": CATEGORY_ID,
+        "sort": "relevance", 
+        "limit": 20,
+        # Adicionamos um offset aleatório pequeno as vezes para não parecer cache
+        "offset": 0 
     }
 
     print(f"[DEBUG] Consultando API: {API_URL} | Categoria: {CATEGORY_ID}")
 
     try:
-        response = requests.get(API_URL, params=params, headers=headers, timeout=10)
+        # Faz a requisição usando a sessão
+        response = session.get(API_URL, params=params, headers=headers, timeout=15)
         
+        # DEBUG DA RESPOSTA SE DER ERRO
         if response.status_code != 200:
             print(f"[DEBUG] Erro na resposta da API: {response.status_code}")
+            # Se for 403, as vezes o corpo da mensagem diz o motivo
+            if response.status_code == 403:
+                print("[DEBUG] Acesso negado. O Mercado Livre bloqueou este IP/Script.")
             return []
             
         data = response.json()
+        
     except Exception as e:
-        print("[DEBUG] Erro de conexão ou parse:", e)
+        print(f"[DEBUG] Erro de conexão: {e}")
         return []
 
     results = []
-
-    # A API de Search retorna uma lista chamada "results"
     items = data.get("results", [])
 
     for item in items:
+        # Extração segura dos dados
         title = item.get("title")
         link = item.get("permalink")
         price = item.get("price")
         currency = item.get("currency_id", "BRL")
+        original_price = item.get("original_price")
 
         if title and link:
-            # Formatação simples de preço para exibir bonito
-            price_fmt = f"{currency} {price}" if price else "Preço não informado"
+            price_fmt = f"{currency} {price}" if price else "R$ --"
             
+            # Lógica simples para detectar se é promoção (se tem preço original riscado)
+            is_promo = False
+            if original_price and original_price > price:
+                is_promo = True
+                discount = int(((original_price - price) / original_price) * 100)
+                price_fmt = f"{price_fmt} (Desconto de {discount}%)"
+
             results.append({
                 "name": title,
                 "link": link,
@@ -58,5 +90,7 @@ def get_best_sellers():
     return results
 
 if __name__ == "__main__":
-    # Teste rápido se rodar o arquivo direto
-    print(get_best_sellers())
+    # Teste isolado
+    items = get_best_sellers()
+    for item in items:
+        print(f"- {item['name']} | {item['price']}")
