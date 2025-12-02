@@ -1,23 +1,21 @@
 import requests
-from bs4 import BeautifulSoup
 
-URL_BEST_SELLERS = "https://www.mercadolivre.com.br/mais-vendidos"
+API_URL = "https://api.mercadolibre.com/sites/MLB/trends/MLB1051"
 
 def get_best_sellers():
-    response = requests.get(URL_BEST_SELLERS, headers={"User-Agent": "Mozilla/5.0"})
-    soup = BeautifulSoup(response.text, "html.parser")
+    try:
+        response = requests.get(API_URL, timeout=10)
+        data = response.json()
+    except Exception as e:
+        print("[DEBUG] Erro na API:", e)
+        return []
 
     products = []
-    items = soup.select("a.ui-item__link")
+    for item in data[:20]:  # limita para evitar spam
+        title = item.get("keyword")
+        link = item.get("url")
 
-    for item in items[:20]:
-        name = item.get("title") or item.text.strip()
-        link = item.get("href")
-
-        if name and link:
-            products.append({
-                "name": name,
-                "link": link
-            })
+        if title and link:
+            products.append({"name": title, "link": link})
 
     return products
