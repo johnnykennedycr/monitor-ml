@@ -5,54 +5,68 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.tl.types import MessageEntityTextUrl
 import requests
 import sys
 import logging
 
-# Configura logs para aparecerem no Render
+# Configura logs
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
 
 # --- CONFIGURAÇÕES ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
-
-# SEU ID DE AFILIADO
 AFFILIATE_TAG = "tepa6477885"
 
-# TRATAMENTO DO CANAL DE DESTINO (Converte ID numérico se necessário)
+# CANAL DE DESTINO
 DEST_ENV = os.environ.get("DESTINATION_CHANNEL", "")
 try:
     if DEST_ENV.startswith("-"):
-        DESTINATION_CHANNEL = int(DEST_ENV) # Converte "-100..." para número
+        DESTINATION_CHANNEL = int(DEST_ENV)
     else:
-        DESTINATION_CHANNEL = DEST_ENV # Mantém "@canal" como texto
+        DESTINATION_CHANNEL = DEST_ENV
 except:
     DESTINATION_CHANNEL = DEST_ENV
 
-# CANAIS PARA MONITORAR
-SOURCE_CHANNELS = [
-    '@promozoneoficial',  # O canal que você pediu
-    'me'                  # 'me' = Suas Mensagens Salvas (PARA TESTE IMEDIATO)
-]
+# --- IMPORTANTE: LISTA DE CANAIS ---
+# Por enquanto deixe vazio ou só com 'me'.
+# O código abaixo vai te dizer qual ID colocar aqui.
+SOURCE_CHANNELS = ['me'] 
 
-# --- FLASK (Para manter o Render acordado) ---
+# --- FLASK ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot Monitorando @promozoneoficial"
+    return "🤖 Scanner de IDs Ativo!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# --- FUNÇÃO DE AFILIADO ---
+# --- FUNÇÕES AUXILIARES ---
+def get_all_links(message):
+    urls = set()
+    text = message.text or ""
+    # Regex ajustado para pegar mercadolivre.com (sem br) e /sec/
+    regex_links = re.findall(r'(https?://[^\s]+)', text)
+    for url in regex_links:
+        urls.add(url)
+    if message.entities:
+        for entity in message.entities:
+            if isinstance(entity, MessageEntityTextUrl):
+                urls.add(entity.url)
+    return list(urls)
+
 def convert_link(url):
-    """ Tenta converter o link para afiliado mantendo parâmetros ou limpando """
-    print(f"   -> Gerando link afiliado para: {url[:30]}...", flush=True)
-    
+    print(f"   ⚙️ Convertendo: {url[:30]}...", flush=True)
     clean_url = url.split("?")[0]
+    
+    # Validação mais flexível (aceita .com e .com.br)
+    if "mercadolivre" not in clean_url and "mercado.li" not in clean_url:
+        return url
+
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
     payload = {"tag": AFFILIATE_TAG, "urls": [clean_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -62,82 +76,50 @@ def convert_link(url):
         data = r.json()
         if "links" in data and len(data["links"]) > 0:
             return data["links"][0]["url"]
-    except Exception as e:
-        print(f"   [ERRO API] {e}", flush=True)
+    except:
+        pass
     
-    # Fallback simples
     return f"{clean_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
-print("--- INICIANDO CLIENTE TELETHON ---", flush=True)
-try:
-    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-except Exception as e:
-    print(f"ERRO CRÍTICO AO INICIAR CLIENTE: {e}", flush=True)
+client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
-async def handler(event):
-    # Log para saber que o bot está ouvindo
-    try:
-        chat_name = "Desconhecido"
-        chat = await event.get_chat()
-        chat_name = chat.title if hasattr(chat, 'title') else "Private/Me"
-    except:
-        chat_name = str(event.chat_id)
-
-    print(f"[MSG RECEBIDA] Fonte: {chat_name} | Texto: {event.text[:30]}...", flush=True)
-
-    text = event.message.text or ""
+# --- SCANNER DE CANAIS (A MÁGICA) ---
+async def print_dialogs():
+    print("\n" + "="*40, flush=True)
+    print("📋 LISTA DE CANAIS QUE ESTOU VENDO:", flush=True)
+    print("="*40, flush=True)
     
-    # Filtro: Só queremos Mercado Livre
-    if "mercadolivre.com" in text or "mercado.li" in text:
-        print(f"✅ OFERTA ML DETECTADA!", flush=True)
+    # Itera sobre os últimos 20 chats/canais
+    async for dialog in client.iter_dialogs(limit=30):
+        print(f"📌 Nome: {dialog.name} | ID: {dialog.id}", flush=True)
         
-        # 1. Encontrar o Link na mensagem
-        url_regex = r'(https?://[^\s]+)'
-        urls = re.findall(url_regex, text)
-        
-        new_text = text
-        link_found = False
-        
-        for url in urls:
-            if "mercadolivre" in url or "mercado.li" in url:
-                # 2. Gerar Link Afiliado
-                aff_link = convert_link(url)
-                
-                # 3. Substituir no texto original
-                new_text = new_text.replace(url, aff_link)
-                link_found = True
-        
-        if link_found:
-            try:
-                print(f"   -> Enviando para canal de destino: {DESTINATION_CHANNEL}", flush=True)
-                
-                # 4. Enviar para o seu canal
-                if event.message.media:
-                    await client.send_file(
-                        DESTINATION_CHANNEL, 
-                        event.message.media, 
-                        caption=new_text
-                    )
-                else:
-                    await client.send_message(
-                        DESTINATION_CHANNEL, 
-                        new_text, 
-                        link_preview=False
-                    )
-                print("🚀 CLONAGEM SUCESSO!", flush=True)
-            except Exception as e:
-                print(f"❌ ERRO AO POSTAR: {e}", flush=True)
-                print("DICA: Verifique se o ID do canal de destino está correto e se você é Admin dele.")
+    print("="*40, flush=True)
+    print("⚠️ COPIE O ID DO CANAL 'PROMOZONE' E COLOQUE NO CÓDIGO!\n", flush=True)
 
-# --- INICIALIZAÇÃO ---
+# Listener Genérico (Ouve tudo por enquanto para testar)
+@client.on(events.NewMessage())
+async def handler(event):
+    # Loga de onde veio a mensagem
+    print(f"[NOVA MENSAGEM] Chat ID: {event.chat_id} | Texto: {event.text[:20]}...", flush=True)
+    
+    # Se o ID não estiver na lista (que vamos configurar depois), ignora
+    # Mas como estamos debugando, vamos processar se for ML
+    
+    urls = get_all_links(event.message)
+    ml_urls = [u for u in urls if "mercadolivre" in u or "mercado.li" in u]
+    
+    if ml_urls:
+        print(f"✅ LINK ML ENCONTRADO NO CHAT {event.chat_id}", flush=True)
+        # (A lógica de envio fica pausada até pegarmos o ID certo para não fazer spam)
+
+# --- START ---
 if __name__ == '__main__':
-    # Roda o site em background
     t = Thread(target=run_web)
     t.start()
     
-    # Roda o cliente do Telegram
-    print("--- AGUARDANDO MENSAGENS ---", flush=True)
+    print("--- CONECTANDO... ---", flush=True)
     with client:
+        # RODA O SCANNER AO INICIAR
+        client.loop.run_until_complete(print_dialogs())
         client.run_until_disconnected()
