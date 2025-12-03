@@ -31,7 +31,7 @@ except:
 
 # CANAIS PARA MONITORAR
 SOURCE_CHANNELS = [
-    '@promozoneoficial',
+    '-1002026298205',
     'me'
 ]
 
