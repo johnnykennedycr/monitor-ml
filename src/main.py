@@ -10,9 +10,8 @@ import requests
 import sys
 import logging
 
-# Configura logs para aparecerem no Render (STDOUT)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+# Configura logs
+logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
 
 # --- CONFIGURAÇÕES ---
 API_ID = int(os.environ.get("API_ID", 0))
@@ -32,8 +31,8 @@ except:
 
 # CANAIS PARA MONITORAR
 SOURCE_CHANNELS = [
-    '-1002026298205',
-    'me' # Para testes
+    '@promozoneoficial',
+    'me'
 ]
 
 # --- FLASK ---
@@ -41,7 +40,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V4 - Rodando com Gunicorn!"
+    return "🤖 Sniper Bot V5 - Link Resolver Ativo"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- FUNÇÕES AUXILIARES ---
 def get_all_links(message):
@@ -56,29 +59,62 @@ def get_all_links(message):
                 urls.add(entity.url)
     return list(urls)
 
-def convert_link(url):
-    print(f"   ⚙️ Convertendo: {url[:40]}...", flush=True)
-    clean_url = url.split("?")[0]
-    
-    if "mercadolivre" not in clean_url and "mercado.li" not in clean_url:
+def resolve_real_url(url):
+    """
+    Segue o redirecionamento dos links /sec/ ou curtos para achar o produto real.
+    """
+    # Se não for link curto, não precisa resolver (economiza tempo)
+    if "/sec/" not in url and "mercado.li" not in url:
+        return url.split("?")[0] # Só limpa parâmetros
+
+    print(f"   🕵️ Resolvendo redirecionamento: {url[:30]}...", flush=True)
+    try:
+        # Fazemos uma requisição HEAD ou GET permitindo redirects
+        # Usamos stream=True para não baixar o HTML inteiro, só ver a URL final
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        resp = session.get(url, allow_redirects=True, timeout=10, stream=True)
+        
+        final_url = resp.url
+        # Limpa parâmetros de rastreio do concorrente (tudo depois de ?)
+        clean_final = final_url.split("?")[0]
+        
+        print(f"   ✅ Link Real Descoberto: {clean_final[:40]}...", flush=True)
+        return clean_final
+    except Exception as e:
+        print(f"   ⚠️ Falha ao resolver link: {e}", flush=True)
         return url
 
+def convert_link(url):
+    # 1. Primeiro descobre o link real do produto (Tira o Promozone da jogada)
+    real_product_url = resolve_real_url(url)
+    
+    # 2. Verifica se continua sendo ML
+    if "mercadolivre" not in real_product_url and "mercado.li" not in real_product_url:
+        return url
+
+    # 3. Manda para a API Oficial
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": AFFILIATE_TAG, "urls": [clean_url]}
+    payload = {"tag": AFFILIATE_TAG, "urls": [real_product_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
         r = requests.post(api_url, json=payload, headers=headers, timeout=5)
-        data = r.json()
-        if "links" in data and len(data["links"]) > 0:
-            return data["links"][0]["url"]
+        if r.status_code == 200:
+            data = r.json()
+            if "links" in data and len(data["links"]) > 0:
+                print("   💰 Link Afiliado Gerado com Sucesso!", flush=True)
+                return data["links"][0]["url"]
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    return f"{clean_url}?matt_word={AFFILIATE_TAG}"
+    # Fallback: Adiciona tag manualmente no link limpo
+    return f"{real_product_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
-# Inicializa o cliente, mas não conecta ainda
+print("--- INICIANDO CLIENTE ---", flush=True)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
@@ -99,12 +135,13 @@ async def handler(event):
 
     print(f"✅ OFERTA ML DETECTADA! ({len(ml_urls)} links)", flush=True)
     
+    # Pega o primeiro link, resolve e afilia
     main_link = ml_urls[0]
     aff_link = convert_link(main_link)
     
     original_text = event.message.text or "Confira esta oferta!"
     
-    # Remove links antigos visualmente
+    # Remove visualmente os links antigos do texto
     for u in ml_urls:
         original_text = original_text.replace(u, "🔗")
     
@@ -118,39 +155,35 @@ async def handler(event):
     try:
         print(f"   -> Enviando para: {DESTINATION_CHANNEL}", flush=True)
         if event.message.media:
-            await client.send_file(DESTINATION_CHANNEL, event.message.media, caption=new_caption, parse_mode="html")
+            await client.send_file(
+                DESTINATION_CHANNEL, 
+                event.message.media, 
+                caption=new_caption, 
+                parse_mode="html"
+            )
         else:
-            await client.send_message(DESTINATION_CHANNEL, new_caption, link_preview=True, parse_mode="html")
+            await client.send_message(
+                DESTINATION_CHANNEL, 
+                new_caption, 
+                link_preview=True, 
+                parse_mode="html"
+            )
         print("🚀 SUCESSO!", flush=True)
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- INICIALIZAÇÃO CORRIGIDA PARA GUNICORN ---
-def start_telethon_thread():
-    """Roda o Telethon em um loop de eventos isolado na thread"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# --- STARTUP ---
+async def startup_check():
+    print("--- VERIFICANDO CANAIS ---")
+    async for dialog in client.iter_dialogs(limit=15):
+        print(f"   - Vejo: {dialog.name} (ID: {dialog.id})")
+
+if __name__ == '__main__':
+    t = Thread(target=run_web)
+    t.start()
     
-    print("--- CONECTANDO TELETHON ---", flush=True)
-    
-    # Conecta e Mantém rodando
+    print("--- CONECTANDO... ---", flush=True)
     with client:
-        # Verificação inicial de canais
-        print("--- VERIFICANDO LISTA DE CANAIS (STARTUP) ---", flush=True)
-        async def check():
-            async for dialog in client.iter_dialogs(limit=15):
-                print(f"   - Vejo: {dialog.name} (ID: {dialog.id})", flush=True)
-        client.loop.run_until_complete(check())
+        client.loop.run_until_complete(startup_check())
         print("--- MONITORAMENTO ATIVO ---", flush=True)
-        
         client.run_until_disconnected()
-
-# DISPARO IMEDIATO (FORA DO IF MAIN)
-# Isso garante que o Gunicorn execute a thread assim que carregar o arquivo
-t = Thread(target=start_telethon_thread)
-t.daemon = True # Importante para não travar o shutdown
-t.start()
-
-if __name__ == "__main__":
-    # Apenas para teste local
-    app.run(host='0.0.0.0', port=8080)
