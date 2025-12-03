@@ -1,70 +1,107 @@
 import feedparser
+import cloudscraper
 import requests
 import time
 
-# URL do Feed RSS do Gatry (Promoções Gerais)
-RSS_URL = "https://gatry.com/feed"
+# Lista de Feeds para monitorar
+FEEDS = [
+    {"name": "Gatry", "url": "https://gatry.com/feed"},
+    {"name": "Hardmob", "url": "https://www.hardmob.com.br/external.php?type=RSS2&forumids=407"}
+]
 
 def get_real_link(url):
     """
-    O link do RSS vem como 'gatry.com/...'
-    Essa função segue o redirecionamento para pegar o link final 'mercadolivre.com.br...'
-    para que você possa gerar seu link de afiliado corretamente.
+    Segue o redirecionamento para pegar o link final do Mercado Livre
     """
     try:
-        # Faz uma requisição HEAD (sem baixar o corpo) só para seguir o redirect
-        resp = requests.head(url, allow_redirects=True, timeout=5)
+        # Headers para evitar bloqueio no HEAD request
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=5)
         return resp.url
     except:
         return url
 
 def get_best_sellers():
-    print(f"[DEBUG] Lendo Feed RSS: {RSS_URL}")
+    print("[DEBUG] Iniciando Agregador de RSS (Blindado)...")
     
-    # 1. Baixa e processa o XML do RSS
-    feed = feedparser.parse(RSS_URL)
+    # Cria o scraper para baixar o XML passando pelo Cloudflare
+    scraper = cloudscraper.create_scraper()
     
-    print(f"[DEBUG] Itens no feed: {len(feed.entries)}")
+    all_products = []
     
-    products = []
-    
-    # 2. Itera sobre as últimas notícias
-    for entry in feed.entries[:20]: # Olha as 20 últimas
-        title = entry.title
-        link_gatry = entry.link
-        category = entry.get('category', '').lower()
+    for source in FEEDS:
+        print(f"[DEBUG] Lendo Feed: {source['name']} ({source['url']})")
         
-        # 3. FILTRO: Só queremos Mercado Livre
-        # O Gatry costuma colocar a loja no título ou na categoria
-        # Ex: "iPhone 13 - R$ 3000 - Mercado Livre"
-        is_ml = "mercado livre" in title.lower() or "mercadolivre" in title.lower()
-        
-        if is_ml:
-            # Pega o preço se estiver na descrição (O Gatry poe o preço no titulo geralmente)
-            # Mas vamos deixar genérico
-            price = "Ver Oferta"
-            if "R$" in title:
-                # Tenta extrair o preço do título de forma simples
-                parts = title.split("R$")
-                if len(parts) > 1:
-                    price = "R$" + parts[1].split(" ")[1] # Pega o valor logo depois do R$
-
-            # Descobre o link real do ML
-            final_link = get_real_link(link_gatry)
+        try:
+            # 1. Baixa o conteúdo XML usando o scraper (fura bloqueio)
+            response = scraper.get(source['url'])
             
-            # Só adiciona se o link final for realmente do ML (segurança extra)
-            if "mercadolivre.com.br" in final_link:
-                products.append({
-                    "name": title,
-                    "link": final_link, # Link limpo do ML
-                    "price": price,
-                    "id": entry.id # ID único do post para não repetir
-                })
+            if response.status_code != 200:
+                print(f"[DEBUG] Erro ao baixar feed {source['name']}: {response.status_code}")
+                continue
 
-    print(f"[DEBUG] Produtos do Mercado Livre encontrados: {len(products)}")
-    return products
+            # 2. Passa o texto XML baixado para o feedparser
+            feed = feedparser.parse(response.text)
+            
+            print(f"[DEBUG] {source['name']}: {len(feed.entries)} itens encontrados.")
+            
+            # 3. Processa os itens
+            for entry in feed.entries[:15]: # Top 15 de cada site
+                title = entry.title
+                link_original = entry.link
+                
+                # Filtro: Busca por "Mercado Livre" no título ou link
+                # (Hardmob e Gatry costumam colocar o nome da loja no titulo)
+                is_ml = "mercado livre" in title.lower() or "mercadolivre" in title.lower() or "mercadolivre" in link_original.lower()
+                
+                if is_ml:
+                    # Tenta limpar o preço do título (Ex: "iPhone - R$ 2000 - ML")
+                    price = "Ver Oferta"
+                    if "R$" in title:
+                        try:
+                            # Lógica simples para pegar o valor após R$
+                            parts = title.split("R$")
+                            if len(parts) > 1:
+                                price_part = parts[1].strip().split(" ")[0] # Pega o primeiro token depois do R$
+                                # Remove caracteres estranhos se vierem (ex: 2.000,00...)
+                                price = f"R$ {price_part}"
+                        except:
+                            pass
+
+                    # Resolve link final (importante para afiliado)
+                    final_link = get_real_link(link_original)
+                    
+                    # Verifica novamente se o link final é ML (segurança)
+                    if "mercadolivre.com.br" in final_link:
+                        # Remove parâmetros de tracking antigos para por o seu limpo depois
+                        if "?" in final_link:
+                            final_link = final_link.split("?")[0]
+
+                        all_products.append({
+                            "name": title,
+                            "link": final_link,
+                            "price": price,
+                            # Usa o link como ID único para evitar duplicatas
+                            "id": final_link 
+                        })
+
+        except Exception as e:
+            print(f"[DEBUG] Erro processando {source['name']}: {e}")
+
+    # Remove duplicatas (caso o mesmo produto apareça nos dois feeds)
+    unique_products = []
+    seen_links = set()
+    for p in all_products:
+        if p['link'] not in seen_links:
+            unique_products.append(p)
+            seen_links.add(p['link'])
+
+    print(f"[DEBUG] Total de produtos ML filtrados: {len(unique_products)}")
+    return unique_products
 
 if __name__ == "__main__":
     items = get_best_sellers()
     for i in items:
-        print(f"itemName: {i['name']} | Link: {i['link']}")
+        print(f" > {i['name']}")
