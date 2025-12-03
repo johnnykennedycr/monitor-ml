@@ -5,102 +5,66 @@ from scraper import get_best_sellers
 from affiliate import generate_affiliate_link
 from notifier import send_telegram
 
-# Configura path e diretórios
+# Configura path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_FILE = os.path.join(BASE_DIR, "database.json")
 
-# Carrega variáveis de ambiente
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def load_db():
-    """Carrega o banco de dados. Cria um novo se não existir ou estiver corrompido/vazio."""
-    if not os.path.exists(DATABASE_FILE):
-        print("[DEBUG] Database não existe. Criando novo.")
+    if not os.path.exists(DATABASE_FILE) or os.stat(DATABASE_FILE).st_size == 0:
         return []
-    
-    # VERIFICAÇÃO CRÍTICA: Se o arquivo existe mas tem 0 bytes (vazio)
-    if os.stat(DATABASE_FILE).st_size == 0:
-        print("[DEBUG] Database encontrado mas está vazio. Resetando.")
-        return []
-
     try:
         with open(DATABASE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except json.JSONDecodeError:
-        print("[DEBUG] Erro de JSON (arquivo corrompido). Resetando database.")
-        return []
-    except Exception as e:
-        print(f"[DEBUG] Erro ao ler database: {e}")
+    except:
         return []
 
 def save_db(data):
     try:
         with open(DATABASE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
-        print("[DEBUG] Database salvo com sucesso.")
     except Exception as e:
-        print(f"[DEBUG] Erro ao salvar database: {e}")
+        print(f"[DEBUG] Erro ao salvar DB: {e}")
 
 def main():
-    print("--- INICIANDO EXECUÇÃO ---")
+    print("--- INICIANDO BOT VIA API OFICIAL ---")
     
-    # 1. Carregar produtos já enviados
-    seen_links = load_db()
-    print(f"[DEBUG] Total de links já enviados no histórico: {len(seen_links)}")
+    seen = load_db()
+    print(f"[DEBUG] Histórico carregado: {len(seen)} itens.")
 
-    # 2. Buscar produtos na API (usando o scraper corrigido)
+    # A mágica acontece aqui (agora autenticado)
     products = get_best_sellers()
-    
+
     if not products:
-        print("[DEBUG] Nenhum produto retornado pela API. Encerrando.")
+        print("[DEBUG] Nenhum produto retornado. Verifique as credenciais.")
         return
 
-    # Lista para salvar novos envios
-    # (Começamos com uma cópia do que já tínhamos para não perder histórico)
-    updated_seen_links = seen_links.copy()
-    items_sent = 0
+    new_seen = seen.copy()
+    count = 0
 
-    # 3. Processar produtos
     for item in products:
-        # Verifica se o link JÁ existe na lista de enviados
-        if item["link"] in seen_links:
-            continue # Pula este produto
+        if item["link"] not in seen:
+            print(f"[DEBUG] Novo: {item['name']}")
             
-        print(f"[DEBUG] Novo produto encontrado: {item['name']}")
-
-        # Gera link (ajuste conforme sua lógica no affiliate.py)
-        affiliate_url = generate_affiliate_link(item["link"])
-        
-        # Monta mensagem
-        message = (
-            f"🔥 <b>{item['name']}</b>\n\n"
-            f"💰 <b>{item.get('price', '')}</b>\n\n"
-            f"🔗 <a href='{affiliate_url}'>Ver Oferta</a>"
-        )
-
-        # Envia Telegram
-        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            try:
+            affiliate = generate_affiliate_link(item["link"])
+            message = f"🔥 <b>{item['name']}</b>\n\n💰 {item['price']}\n🔗 <a href='{affiliate}'>Ver Oferta</a>"
+            
+            if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
                 send_telegram(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, message)
-                items_sent += 1
-                # Adiciona à lista de vistos APENAS se enviou com sucesso
-                updated_seen_links.append(item["link"])
-            except Exception as e:
-                print(f"[DEBUG] Falha ao enviar Telegram: {e}")
-        else:
-            print("[DEBUG] Modo teste (sem token Telegram):", item['name'])
-            updated_seen_links.append(item["link"])
+                count += 1
+            
+            new_seen.append(item["link"])
 
-    # 4. Salvar database apenas se houve novidades
-    if items_sent > 0 or len(updated_seen_links) > len(seen_links):
-        save_db(updated_seen_links)
-        print(f"[DEBUG] {items_sent} novas mensagens enviadas.")
+    if count > 0:
+        save_db(new_seen)
+        print(f"[DEBUG] {count} mensagens enviadas.")
     else:
-        print("[DEBUG] Nenhuma novidade para enviar.")
+        print("[DEBUG] Sem novidades.")
 
-    print("--- FIM DA EXECUÇÃO ---")
+    print("--- FIM ---")
 
 if __name__ == "__main__":
     main()
