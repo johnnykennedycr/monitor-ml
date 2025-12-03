@@ -1,71 +1,78 @@
-import undetected_chromedriver as uc
+import time
+import random
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
-import random
-import os
 
-# URL: Ofertas do dia
+# URL da página de ofertas
 URL_OFERTAS = "https://www.mercadolivre.com.br/ofertas?container_id=MLB779362-1&page=1"
 
 def get_best_sellers():
-    print("[DEBUG] Iniciando Undetected Chrome (Auto-Version)...")
+    print("[DEBUG] Iniciando Selenium Padrão (com Stealth)...")
     
-    options = uc.ChromeOptions()
-    # Argumentos CRITICOS para rodar no GitHub Actions (Linux Headless)
-    options.add_argument('--headless=new') 
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-setuid-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument('--disable-popup-blocking')
+    # 1. Configurações para rodar no GitHub Actions
+    chrome_options = Options()
+    chrome_options.add_argument("--headless=new") # Modo invisível novo
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080")
     
-    # User-Agent randômico
-    options.add_argument(f'--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.{random.randint(0, 99)} Safari/537.36')
+    # 2. TRUQUES ANTI-ROBÔ (Stealth Manual)
+    # Isso remove a flag "navigator.webdriver" que denuncia o bot
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option("useAutomationExtension", False)
+    
+    # User-Agent real
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = None
     products = []
 
     try:
-        # CORREÇÃO PRINCIPAL: Removemos version_main=119.
-        # Deixamos ele auto-detectar ou baixar a mais recente compatível.
-        # O use_subprocess=True ajuda a evitar travamentos no Linux.
-        driver = uc.Chrome(options=options, use_subprocess=True)
+        # 3. Gerenciador de Driver AUTOMÁTICO (Resolve o erro v142 vs v143)
+        print("[DEBUG] Instalando driver compatível...")
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
         
+        # Mascarar propriedades do navegador
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
         print(f"[DEBUG] Acessando: {URL_OFERTAS}")
         driver.get(URL_OFERTAS)
         
-        # Espera para carregar
+        # Espera humana
         time.sleep(random.uniform(3, 5))
         
-        print(f"[DEBUG] Título: '{driver.title}'")
-
+        # Diagnóstico
+        print(f"[DEBUG] Título da página: '{driver.title}'")
+        
         if "Security" in driver.title or "human" in driver.title:
-            print("[DEBUG] 🚨 ALERTA: Captcha detectado.")
-            # Tira um print para debug nos artefatos se precisar
-            # driver.save_screenshot('captcha_error.png')
+            print("[DEBUG] 🚨 Captcha detectado.")
             return []
 
         # Scroll para carregar imagens
         driver.execute_script("window.scrollTo(0, 800);")
         time.sleep(2)
 
-        print("[DEBUG] Buscando elementos...")
+        print("[DEBUG] Extraindo produtos...")
         
-        # Tenta coletores diferentes
+        # Seletores
         items = driver.find_elements(By.CLASS_NAME, "promotion-item")
         if not items:
             items = driver.find_elements(By.CSS_SELECTOR, "li.ui-search-layout__item")
             
-        print(f"[DEBUG] Itens encontrados: {len(items)}")
+        print(f"[DEBUG] Itens encontrados no HTML: {len(items)}")
 
         for item in items[:15]:
             try:
-                # Tenta extrair dados (com tratamento de erro individual)
+                # Tenta extrair dados
                 try:
-                    title = item.find_element(By.CSS_SELECTOR, ".promotion-item__title, h2, .ui-search-item__title").text
+                    title = item.find_element(By.CSS_SELECTOR, ".promotion-item__title, h2").text
                 except: continue
 
                 try:
@@ -82,16 +89,11 @@ def get_best_sellers():
                 continue
 
     except Exception as e:
-        print(f"[DEBUG] Erro Driver: {e}")
-        # Se falhar a conexão, geralmente é erro de binário
-        if "cannot connect" in str(e):
-             print("[DEBUG] DICA: O driver falhou ao iniciar o processo do Chrome.")
+        print(f"[DEBUG] Erro Selenium: {e}")
 
     finally:
         if driver:
-            try:
-                driver.quit()
-            except: pass
+            driver.quit()
 
     print(f"[DEBUG] Total extraído: {len(products)}")
     return products
