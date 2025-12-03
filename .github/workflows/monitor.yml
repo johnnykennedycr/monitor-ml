@@ -5,6 +5,10 @@ on:
     - cron: "*/10 * * * *"  # a cada 10 minutos
   workflow_dispatch:
 
+# Permite que o bot salve alterações no repositório (para atualizar o database.json)
+permissions:
+  contents: write
+
 jobs:
   run-monitor:
     runs-on: ubuntu-latest
@@ -24,9 +28,28 @@ jobs:
 
       - name: Run monitor
         env:
+          # Credenciais Telegram
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Credenciais Mercado Livre (ADICIONADO AGORA)
+          ML_APP_ID: ${{ secrets.ML_APP_ID }}
+          ML_CLIENT_SECRET: ${{ secrets.ML_CLIENT_SECRET }}
+          ML_REFRESH_TOKEN: ${{ secrets.ML_REFRESH_TOKEN }}
         run: |
           echo "[DEBUG] Executando monitor..."
           python src/main.py
           echo "[DEBUG] Fim da execução."
+
+      # SALVA O HISTÓRICO PARA NÃO REPETIR MENSAGENS
+      - name: Commit and Push Database
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          # Verifica se o arquivo existe antes de adicionar
+          if [ -f src/database.json ]; then
+            git add src/database.json
+            git commit -m "Auto-update database.json" || echo "Sem novas alterações para salvar."
+            git push
+          else
+            echo "Arquivo database.json não encontrado, nada a salvar."
+          fi
