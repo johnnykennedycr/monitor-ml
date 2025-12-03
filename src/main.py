@@ -1,106 +1,102 @@
 import os
-import json
-import requests
-import sys
+import time
+import telebot
+from threading import Thread
+import schedule
 
-from scraper import get_best_sellers
+from queue_manager import init_db, add_to_queue, get_next_in_line, mark_as_sent, get_queue_stats
+from extractor import extract_details
 from affiliate import generate_affiliate_link
 
-# Configurações
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_FILE = os.path.join(BASE_DIR, "database.json")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+GROUP_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Seu ID pessoal (para o bot só aceitar links seus)
+ADMIN_ID = os.getenv("ADMIN_ID") # Adicione isso nos Secrets!
 
-def load_db():
-    if not os.path.exists(DATABASE_FILE) or os.stat(DATABASE_FILE).st_size == 0:
-        return []
-    try:
-        with open(DATABASE_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
+bot = telebot.TeleBot(TOKEN)
 
-def save_db(data):
-    try:
-        with open(DATABASE_FILE, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"[DEBUG] Erro ao salvar DB: {e}")
-
-def send_telegram_photo(token, chat_id, photo_url, caption):
-    url = f"https://api.telegram.org/bot{token}/sendPhoto"
-    payload = {
-        "chat_id": chat_id,
-        "photo": photo_url,
-        "caption": caption,
-        "parse_mode": "HTML"
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        return r.json()
-    except:
-        return None
-
-def send_telegram_message(token, chat_id, text):
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    requests.post(url, json=payload)
-
-def main():
-    print("--- INICIANDO BOT ---")
-    seen_links = load_db()
-    products = get_best_sellers()
-    
-    if not products:
-        print("[DEBUG] Nenhum produto encontrado.")
+# --- PARTE 1: RECEBER LINKS (OUVINTE) ---
+@bot.message_handler(func=lambda m: True)
+def handle_message(message):
+    # Segurança: Só aceita comandos seus
+    # (Se não quiser filtrar, remova o if)
+    if str(message.from_user.id) != str(ADMIN_ID) and ADMIN_ID:
         return
 
-    new_seen = seen_links.copy()
-    count = 0
-
-    for item in products:
-        if item["id"] in seen_links:
-            continue
-
-        print(f"[DEBUG] Processando: {item['name']} - {item['price']}")
+    text = message.text.strip()
+    
+    # Verifica se é um link do ML
+    if "mercadolivre.com.br" in text or "mercado.li" in text:
+        bot.reply_to(message, "🔎 Analisando link...")
         
-        affiliate_url = generate_affiliate_link(item["link"])
+        # Extrai dados
+        data = extract_details(text)
         
-        # LAYOUT DA MENSAGEM ATUALIZADO
-        # Focamos em deixar o preço GIGANTE e o botão claro
-        caption = (
-            f"<b>{item['name']}</b>\n\n"
-            f"🔥 <b>OFERTA:</b> <code>{item['price']}</code>\n"
-            f"💳 <i>(Pode haver parcelamento sem juros)</i>\n\n"
-            f"👇 <b>GARANTA O SEU AQUI:</b>\n"
-            f"<a href='{affiliate_url}'>🛒 IR PARA O MERCADO LIVRE</a>"
-        )
-
-        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            if item.get("image_url"):
-                resp = send_telegram_photo(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, item["image_url"], caption)
-                if not resp or not resp.get("ok"):
-                    send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, caption)
-            else:
-                send_telegram_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, caption)
+        if data:
+            # Salva na fila
+            added = add_to_queue(text, data['title'], data['price'], data['image_url'])
             
-            count += 1
-            new_seen.append(item["id"])
+            if added:
+                count = get_queue_stats()
+                bot.reply_to(message, f"✅ **Adicionado à fila!**\n\n📦 {data['title']}\n💰 {data['price']}\n\n📊 Posição na fila: {count}")
+            else:
+                bot.reply_to(message, "⚠️ Esse link já estava na fila.")
         else:
-            print("[DEBUG] Simulação de envio:")
-            print(caption)
-            new_seen.append(item["id"])
+            bot.reply_to(message, "❌ Não consegui ler os dados desse produto. Tente outro.")
+    
+    elif text == "/fila":
+        count = get_queue_stats()
+        bot.reply_to(message, f"📊 Existem **{count}** posts aguardando na fila.")
 
-    if count > 0:
-        save_db(new_seen)
-        print(f"[DEBUG] {count} envios realizados.")
+# --- PARTE 2: POSTADOR AUTOMÁTICO (WORKER) ---
+def job_poster():
+    print("[JOB] Verificando fila...")
+    item = get_next_in_line()
+    
+    if item:
+        print(f"[JOB] Postando: {item['title']}")
+        
+        # Gera link de afiliado
+        aff_link = generate_affiliate_link(item['original_link'])
+        
+        caption = (
+            f"🔥 <b>{item['title']}</b>\n\n"
+            f"💰 <b>{item['price']}</b>\n\n"
+            f"💳 <i>Verifique parcelamento e frete</i>\n\n"
+            f"👇 <b>GARANTA AQUI:</b>\n"
+            f"<a href='{aff_link}'>🛒 IR PARA A LOJA</a>"
+        )
+        
+        try:
+            if item['image_url']:
+                bot.send_photo(GROUP_ID, item['image_url'], caption=caption, parse_mode="HTML")
+            else:
+                bot.send_message(GROUP_ID, caption, parse_mode="HTML")
+            
+            mark_as_sent(item['id'])
+            print("[JOB] Sucesso.")
+            
+        except Exception as e:
+            print(f"[JOB] Erro ao postar: {e}")
     else:
-        print("[DEBUG] Sem novidades.")
+        print("[JOB] Fila vazia.")
 
+def run_scheduler():
+    # Configura para rodar a cada 10 minutos
+    schedule.every(10).minutes.do(job_poster)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+# --- INICIALIZAÇÃO ---
 if __name__ == "__main__":
-    main()
+    init_db()
+    
+    # Inicia o agendador em uma thread paralela
+    t = Thread(target=run_scheduler)
+    t.start()
+    
+    # Inicia o bot (Bloqueia o script aqui para ouvir mensagens)
+    print("🤖 Bot rodando e aguardando links...")
+    bot.polling()
