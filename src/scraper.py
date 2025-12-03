@@ -1,72 +1,85 @@
-import time
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import time
+import random
 
-# URL da página de ofertas do dia (HTML real)
+# URL: Ofertas do dia (Página visual)
 URL_OFERTAS = "https://www.mercadolivre.com.br/ofertas?container_id=MLB779362-1&page=1"
 
 def get_best_sellers():
-    print("[DEBUG] Iniciando Selenium (Chrome Headless)...")
+    print("[DEBUG] Iniciando Undetected Chrome...")
     
-    # Configurações para rodar no servidor (GitHub Actions)
-    chrome_options = Options()
-    chrome_options.add_argument("--headless") # Roda sem interface gráfica
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    # User-Agent real para não parecer robô
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    # Opções para rodar no GitHub Actions (Linux Server)
+    options = uc.ChromeOptions()
+    options.add_argument('--headless=new') # Modo invisível moderno
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument('--disable-popup-blocking')
+    
+    # User-Agent randômico para parecer humano
+    options.add_argument(f'--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.{random.randint(0, 99)} Safari/537.36')
 
     driver = None
     products = []
 
     try:
-        # Instala e inicia o driver do Chrome automaticamente
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        # O undetected-chromedriver baixa e "hackeia" o driver automaticamente
+        driver = uc.Chrome(options=options, version_main=119) # Tenta fixar versão estável ou remova version_main se der erro
         
-        print(f"[DEBUG] Acessando URL: {URL_OFERTAS}")
+        print(f"[DEBUG] Acessando: {URL_OFERTAS}")
         driver.get(URL_OFERTAS)
         
-        # Espera até 10s para a lista de produtos carregar
-        print("[DEBUG] Aguardando carregamento da página...")
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "promotion-item"))
-        )
-        
-        # Pequeno scroll para garantir que imagens/preços carreguem
-        driver.execute_script("window.scrollTo(0, 500);")
+        # Espera aleatória humana
+        time.sleep(random.uniform(3, 5))
+
+        # --- DIAGNÓSTICO DE ERRO ---
+        # Vamos imprimir o título da página para saber onde caímos
+        print(f"[DEBUG] Título da Página Carregada: '{driver.title}'")
+
+        if "Security" in driver.title or "human" in driver.title:
+            print("[DEBUG] 🚨 ALERTA: O Mercado Livre detectou o robô e mostrou Captcha.")
+            return []
+
+        # Tenta rolar a página para carregar imagens (lazy load)
+        driver.execute_script("window.scrollTo(0, 800);")
         time.sleep(2)
 
-        # Busca os cards de produto (a classe pode variar, ajustamos as mais comuns)
+        # Seletores de Ofertas (O ML muda isso sempre, tentamos 2 opções)
+        print("[DEBUG] Buscando elementos de produto...")
+        
+        # Tentativa 1: Classe de Card de Promoção
         items = driver.find_elements(By.CLASS_NAME, "promotion-item")
         
-        print(f"[DEBUG] Elementos encontrados no HTML: {len(items)}")
+        # Tentativa 2: Seletor Genérico de Grid (caso o layout mude)
+        if not items:
+            items = driver.find_elements(By.CSS_SELECTOR, "li.ui-search-layout__item")
 
-        for item in items[:15]: # Pega os top 15
+        print(f"[DEBUG] Itens encontrados: {len(items)}")
+
+        for item in items[:15]:
             try:
-                # Tenta extrair título
+                # Extração resiliente (try/except dentro do loop)
                 try:
-                    title = item.find_element(By.CLASS_NAME, "promotion-item__title").text
+                    # Tenta pegar título
+                    title_elem = item.find_element(By.CSS_SELECTOR, ".promotion-item__title, h2, .ui-search-item__title")
+                    title = title_elem.text
                 except:
-                    continue # Sem título, pula
+                    continue # Sem título não serve
 
-                # Tenta extrair link
                 try:
-                    link = item.find_element(By.CLASS_NAME, "promotion-item__link-container").get_attribute("href")
+                    # Tenta pegar link
+                    link_elem = item.find_element(By.TAG_NAME, "a")
+                    link = link_elem.get_attribute("href")
                 except:
                     continue
 
-                # Tenta extrair preço
                 try:
-                    price_container = item.find_element(By.CLASS_NAME, "andes-money-amount__fraction")
-                    price = f"R$ {price_container.text}"
+                    # Tenta pegar preço
+                    price_elem = item.find_element(By.CSS_SELECTOR, ".andes-money-amount__fraction")
+                    price = f"R$ {price_elem.text}"
                 except:
                     price = "Ver Oferta"
 
@@ -76,25 +89,28 @@ def get_best_sellers():
                         "link": link,
                         "price": price
                     })
-            except Exception as e:
-                # Erro ao processar um item específico, ignora e vai pro próximo
+            except:
                 continue
 
     except Exception as e:
-        print(f"[DEBUG] Erro Crítico no Selenium: {e}")
-        # Tira um print da tela para debug se der erro (opcional, ajuda muito)
+        print(f"[DEBUG] Erro Undetected-Chrome: {e}")
+        # Se der erro, imprime um pedaço do HTML para sabermos o que aconteceu
         if driver:
-             print("[DEBUG] Url final:", driver.current_url)
+            try:
+                print("[DEBUG] HTML da página (Primeiros 500 chars):")
+                print(driver.page_source[:500])
+            except:
+                pass
 
     finally:
         if driver:
-            driver.quit()
-            print("[DEBUG] Navegador fechado.")
+            try:
+                driver.quit()
+            except:
+                pass
 
-    print(f"[DEBUG] Total de produtos extraídos: {len(products)}")
+    print(f"[DEBUG] Total extraído: {len(products)}")
     return products
 
 if __name__ == "__main__":
-    res = get_best_sellers()
-    for p in res:
-        print(f"{p['name']} - {p['price']}")
+    get_best_sellers()
