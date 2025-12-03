@@ -1,7 +1,4 @@
-pyTelegramBotAPI
-schedule
-cloudscraper
-beautifulsoup4
+telethon
 requests
 flask
 gunicorn
