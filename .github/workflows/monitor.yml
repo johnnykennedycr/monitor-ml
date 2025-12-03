@@ -1,11 +1,10 @@
-name: Monitor ML
+name: Monitor Promo RSS
 
 on:
   schedule:
-    - cron: "*/10 * * * *"  # a cada 10 minutos
+    - cron: "*/10 * * * *" # A cada 10 min
   workflow_dispatch:
 
-# Permite que o bot salve alterações no repositório (para atualizar o database.json)
 permissions:
   contents: write
 
@@ -14,8 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -23,33 +21,20 @@ jobs:
           python-version: 3.12
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install requests feedparser
 
       - name: Run monitor
         env:
-          # Credenciais Telegram
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Credenciais Mercado Livre (ADICIONADO AGORA)
-          ML_APP_ID: ${{ secrets.ML_APP_ID }}
-          ML_CLIENT_SECRET: ${{ secrets.ML_CLIENT_SECRET }}
-          ML_REFRESH_TOKEN: ${{ secrets.ML_REFRESH_TOKEN }}
-        run: |
-          echo "[DEBUG] Executando monitor..."
-          python src/main.py
-          echo "[DEBUG] Fim da execução."
+        run: python src/main.py
 
-      # SALVA O HISTÓRICO PARA NÃO REPETIR MENSAGENS
-      - name: Commit and Push Database
+      - name: Commit Database
         run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          # Verifica se o arquivo existe antes de adicionar
+          git config --global user.name 'UpdateBot'
+          git config --global user.email 'bot@noreply.github.com'
           if [ -f src/database.json ]; then
             git add src/database.json
-            git commit -m "Auto-update database.json" || echo "Sem novas alterações para salvar."
+            git commit -m "db update" || echo "Sem alteracoes"
             git push
-          else
-            echo "Arquivo database.json não encontrado, nada a salvar."
           fi
