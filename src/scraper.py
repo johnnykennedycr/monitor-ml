@@ -1,107 +1,99 @@
-import feedparser
 import cloudscraper
-import requests
+from bs4 import BeautifulSoup
 import time
+import random
 
-# Lista de Feeds para monitorar
-FEEDS = [
-    {"name": "Gatry", "url": "https://gatry.com/feed"},
-    {"name": "Hardmob", "url": "https://www.hardmob.com.br/external.php?type=RSS2&forumids=407"}
-]
-
-def get_real_link(url):
-    """
-    Segue o redirecionamento para pegar o link final do Mercado Livre
-    """
-    try:
-        # Headers para evitar bloqueio no HEAD request
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        resp = requests.head(url, headers=headers, allow_redirects=True, timeout=5)
-        return resp.url
-    except:
-        return url
+# Página dedicada do Mercado Livre no Promobit
+PROMOBIT_URL = "https://www.promobit.com.br/loja/mercadolivre/"
 
 def get_best_sellers():
-    print("[DEBUG] Iniciando Agregador de RSS (Blindado)...")
+    print(f"[DEBUG] Iniciando Scraper do Promobit: {PROMOBIT_URL}")
     
-    # Cria o scraper para baixar o XML passando pelo Cloudflare
-    scraper = cloudscraper.create_scraper()
-    
-    all_products = []
-    
-    for source in FEEDS:
-        print(f"[DEBUG] Lendo Feed: {source['name']} ({source['url']})")
+    # 1. Configura navegador falso (Windows/Chrome)
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    )
+
+    try:
+        # 2. Baixa o HTML da página
+        response = scraper.get(PROMOBIT_URL)
         
-        try:
-            # 1. Baixa o conteúdo XML usando o scraper (fura bloqueio)
-            response = scraper.get(source['url'])
-            
-            if response.status_code != 200:
-                print(f"[DEBUG] Erro ao baixar feed {source['name']}: {response.status_code}")
-                continue
+        if response.status_code != 200:
+            print(f"[DEBUG] Erro ao acessar Promobit: {response.status_code}")
+            return []
 
-            # 2. Passa o texto XML baixado para o feedparser
-            feed = feedparser.parse(response.text)
-            
-            print(f"[DEBUG] {source['name']}: {len(feed.entries)} itens encontrados.")
-            
-            # 3. Processa os itens
-            for entry in feed.entries[:15]: # Top 15 de cada site
-                title = entry.title
-                link_original = entry.link
-                
-                # Filtro: Busca por "Mercado Livre" no título ou link
-                # (Hardmob e Gatry costumam colocar o nome da loja no titulo)
-                is_ml = "mercado livre" in title.lower() or "mercadolivre" in title.lower() or "mercadolivre" in link_original.lower()
-                
-                if is_ml:
-                    # Tenta limpar o preço do título (Ex: "iPhone - R$ 2000 - ML")
-                    price = "Ver Oferta"
-                    if "R$" in title:
-                        try:
-                            # Lógica simples para pegar o valor após R$
-                            parts = title.split("R$")
-                            if len(parts) > 1:
-                                price_part = parts[1].strip().split(" ")[0] # Pega o primeiro token depois do R$
-                                # Remove caracteres estranhos se vierem (ex: 2.000,00...)
-                                price = f"R$ {price_part}"
-                        except:
-                            pass
+        # 3. Parseia o HTML
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # O Promobit usa classes dinâmicas (ex: css-1hj7), então não podemos confiar nelas.
+        # Estratégia: Buscar todos os links que contém "/oferta/" no href
+        offer_links = soup.find_all("a", href=True)
+        
+        products = []
+        seen_urls = set()
 
-                    # Resolve link final (importante para afiliado)
-                    final_link = get_real_link(link_original)
+        print(f"[DEBUG] Total de links encontrados na página: {len(offer_links)}")
+
+        for link_tag in offer_links:
+            href = link_tag['href']
+            
+            # Filtra apenas links de oferta
+            if "/oferta/" in href and href not in seen_urls:
+                try:
+                    # O Promobit estrutura o card assim: Link -> Divs -> Título/Preço
+                    # Vamos tentar extrair dados de dentro desse link ou do pai dele
                     
-                    # Verifica novamente se o link final é ML (segurança)
-                    if "mercadolivre.com.br" in final_link:
-                        # Remove parâmetros de tracking antigos para por o seu limpo depois
-                        if "?" in final_link:
-                            final_link = final_link.split("?")[0]
+                    # Título: Geralmente está num h1, h2 ou span dentro do link
+                    title_tag = link_tag.find("h2") or link_tag.find("p") or link_tag.find("span")
+                    if not title_tag:
+                        # Às vezes o título está na propriedade 'title' do link ou imagem
+                        img_tag = link_tag.find("img")
+                        if img_tag and img_tag.get('alt'):
+                            title = img_tag.get('alt')
+                        else:
+                            continue # Sem título, pula
+                    else:
+                        title = title_tag.get_text().strip()
 
-                        all_products.append({
-                            "name": title,
-                            "link": final_link,
-                            "price": price,
-                            # Usa o link como ID único para evitar duplicatas
-                            "id": final_link 
-                        })
+                    # Preço: Procura qualquer texto com "R$" dentro do card
+                    # Subimos para o elemento pai para ter uma visão melhor do card
+                    card_container = link_tag.parent
+                    price = "Ver Oferta"
+                    
+                    # Procura texto de preço no container
+                    if card_container:
+                        text_content = card_container.get_text()
+                        if "R$" in text_content:
+                            # Extração bruta do preço
+                            import re
+                            match = re.search(r'R\$\s?[\d\.,]+', text_content)
+                            if match:
+                                price = match.group(0)
 
-        except Exception as e:
-            print(f"[DEBUG] Erro processando {source['name']}: {e}")
+                    # Link Final
+                    full_link = f"https://www.promobit.com.br{href}"
+                    
+                    # Salvamos
+                    seen_urls.add(href)
+                    products.append({
+                        "name": title,
+                        "link": full_link,
+                        "price": price,
+                        "id": href # ID único
+                    })
+                    
+                except Exception as e:
+                    continue
 
-    # Remove duplicatas (caso o mesmo produto apareça nos dois feeds)
-    unique_products = []
-    seen_links = set()
-    for p in all_products:
-        if p['link'] not in seen_links:
-            unique_products.append(p)
-            seen_links.add(p['link'])
+        # Limita a 15 produtos para não spammar
+        print(f"[DEBUG] Produtos extraídos do Promobit: {len(products)}")
+        return products[:15]
 
-    print(f"[DEBUG] Total de produtos ML filtrados: {len(unique_products)}")
-    return unique_products
+    except Exception as e:
+        print(f"[DEBUG] Erro crítico no scraper: {e}")
+        return []
 
 if __name__ == "__main__":
     items = get_best_sellers()
     for i in items:
-        print(f" > {i['name']}")
+        print(f" > {i['name']} | {i['price']}")
