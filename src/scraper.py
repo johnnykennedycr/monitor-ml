@@ -1,111 +1,96 @@
-import cloudscraper
-from bs4 import BeautifulSoup
-import time
+import os
+import requests
+import json
+from datetime import datetime, timedelta
 
-# URL do fórum de promoções da Hardmob
-HARDMOB_URL = "https://www.hardmob.com.br/forums/407-Promocoes"
-
-def get_real_link(url, scraper):
-    """
-    Hardmob usa redirecionador. Essa função segue ele para achar o link final.
-    """
-    try:
-        # Pede apenas o cabeçalho para ver para onde o link aponta
-        resp = scraper.head(url, allow_redirects=True, timeout=10)
-        return resp.url
-    except:
-        return url
+# Recupera chaves do ambiente
+API_KEY = os.getenv("GOOGLE_API_KEY")
+SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_CX")
 
 def get_best_sellers():
-    print(f"[DEBUG] Iniciando Mineração na Hardmob...")
+    if not API_KEY or not SEARCH_ENGINE_ID:
+        print("[DEBUG] Erro: Chaves do Google não configuradas.")
+        return []
+
+    print("[DEBUG] Consultando Google Custom Search API...")
+
+    # Termos mágicos para achar promoções
+    # Buscamos por "R$" dentro do site do ML
+    query = "site:mercadolivre.com.br/ofertas R$"
     
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
-    )
+    # URL da API do Google
+    url = "https://www.googleapis.com/customsearch/v1"
+    
+    params = {
+        'key': API_KEY,
+        'cx': SEARCH_ENGINE_ID,
+        'q': query,
+        'num': 10,               # Traz 10 resultados
+        'dateRestrict': 'd1',    # Indexado no último dia (para ser recente)
+        'gl': 'br',              # Região Brasil
+        'sort': 'date'           # Ordenar por data de indexação
+    }
 
     try:
-        # 1. Acessa a lista de tópicos
-        response = scraper.get(HARDMOB_URL)
-        if response.status_code != 200:
-            print(f"[DEBUG] Erro Hardmob: {response.status_code}")
+        response = requests.get(url, params=params)
+        data = response.json()
+
+        if "error" in data:
+            print(f"[DEBUG] Erro Google: {data['error']['message']}")
             return []
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        threads = soup.find_all("li", class_="threadbit")
-        print(f"[DEBUG] Tópicos lidos: {len(threads)}")
+        if "items" not in data:
+            print("[DEBUG] Google não retornou itens novos agora.")
+            return []
 
         products = []
         
-        for thread in threads[:20]: # Analisa os 20 mais recentes
-            try:
-                # Extrai o título
-                title_tag = thread.find("a", class_="title")
-                if not title_tag: continue
-                
-                title = title_tag.get_text().strip()
-                link_thread = "https://www.hardmob.com.br/" + title_tag['href']
+        for item in data['items']:
+            title = item.get('title')
+            link = item.get('link')
+            snippet = item.get('snippet', '') # Descrição do Google
 
-                # 2. FILTRO: Verifica se é Mercado Livre
-                if "mercado livre" in title.lower() or "mercadolivre" in title.lower() or "[ml]" in title.lower():
-                    print(f"[DEBUG] Analisando: {title}")
-                    
-                    time.sleep(1) # Delay educado
-                    resp_thread = scraper.get(link_thread)
-                    soup_thread = BeautifulSoup(resp_thread.text, "html.parser")
-                    
-                    # Procura o primeiro post
-                    first_post = soup_thread.find("div", class_="content")
-                    if first_post:
-                        links = first_post.find_all("a", href=True)
-                        
-                        target_link = None
-                        for l in links:
-                            href = l['href']
-                            if "mercadolivre.com.br" in href or "mercado.li" in href:
-                                target_link = href
-                                break
-                        
-                        if target_link:
-                            # Limpa o link
-                            clean_link = get_real_link(target_link, scraper)
-                            if "?" in clean_link:
-                                clean_link = clean_link.split("?")[0]
+            # O título no Google geralmente vem "Nome do Produto | Mercado Livre"
+            # Vamos limpar
+            clean_name = title.split("|")[0].strip()
+            if "Mercado Livre" in clean_name:
+                clean_name = clean_name.replace("Mercado Livre", "").strip()
 
-                            # Extração de Preço (BLINDADA CONTRA ERRO)
-                            price = "Ver Oferta"
-                            try:
-                                if "R$" in title:
-                                    parts = title.split("R$")
-                                    if len(parts) > 1:
-                                        # Pega o pedaço depois do R$, limpa espaços e pega o primeiro token
-                                        price_str = parts[1].strip().split(" ")[0]
-                                        # Remove pontuação final se vier colada (ex: 50,00!)
-                                        price_str = price_str.rstrip(".,!)]")
-                                        if any(char.isdigit() for char in price_str):
-                                            price = f"R$ {price_str}"
-                            except Exception as e:
-                                print(f"[DEBUG] Aviso: Não consegui ler o preço de '{title}'. Usando padrão.")
+            # Tenta extrair preço do Snippet (O Google mostra: "R$ 1.200,00 ...")
+            price = "Ver Oferta"
+            if "R$" in snippet:
+                try:
+                    # Pega o texto logo após o R$
+                    parts = snippet.split("R$")
+                    price_val = parts[1].strip().split(" ")[0]
+                    # Limpeza básica
+                    price_val = price_val.replace(".", "").replace(",", ".")
+                    # Verifica se é numero
+                    float(price_val) 
+                    price = f"R$ {parts[1].strip().split(' ')[0]}" # Reconstrói formatação BR
+                except:
+                    pass
+            
+            # Filtro de segurança: Garante que é link de produto
+            if "/p/" in link or "/MLB-" in link:
+                products.append({
+                    "name": clean_name,
+                    "link": link,
+                    "price": price,
+                    "id": link
+                })
 
-                            products.append({
-                                "name": title,
-                                "link": clean_link,
-                                "price": price,
-                                "id": clean_link
-                            })
-
-            except Exception as e:
-                # Se um tópico falhar, apenas loga e vai para o próximo
-                print(f"[DEBUG] Pulei tópico problemático: {e}")
-                continue
-
-        print(f"[DEBUG] Total de produtos extraídos: {len(products)}")
+        print(f"[DEBUG] Sucesso! {len(products)} ofertas encontradas via Google.")
         return products
 
     except Exception as e:
-        print(f"[DEBUG] Erro Crítico: {e}")
+        print(f"[DEBUG] Erro conexão Google: {e}")
         return []
 
 if __name__ == "__main__":
+    # Para testar local, exporte as variaveis no terminal ou defina aqui temporariamente
+    # os.environ["GOOGLE_API_KEY"] = "SUA_KEY"
+    # os.environ["GOOGLE_SEARCH_CX"] = "SEU_CX"
     items = get_best_sellers()
     for i in items:
-        print(f" > {i['name']} | {i['link']}")
+        print(f"{i['name']} - {i['price']}")
