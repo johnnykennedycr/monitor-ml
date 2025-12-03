@@ -11,19 +11,14 @@ import sys
 import logging
 
 # Configura logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # --- CONFIGURAÇÕES ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 AFFILIATE_TAG = "tepa6477885"
-
-# LISTA DE CANAIS PERMITIDOS (Ids Inteiros)
-ALLOWED_CHATS = [
-    -1002026298205, # Promozone
-]
 
 # CANAL DE DESTINO
 DEST_ENV = os.environ.get("DESTINATION_CHANNEL", "")
@@ -35,12 +30,21 @@ try:
 except:
     DESTINATION_CHANNEL = DEST_ENV
 
+# LISTA DE CANAIS PERMITIDOS
+ALLOWED_CHATS = [
+    -1002026298205, # Promozone
+]
+
 # --- FLASK ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot Monitor ML - V7 (Debug Auth)"
+    return "🤖 Sniper Bot V8 - Async Fixed!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- FUNÇÕES AUXILIARES ---
 def get_all_links(message):
@@ -76,7 +80,7 @@ def convert_link(url):
         return url
 
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": AFFILIATE_TAG, "urls": [real_url]}
+    payload = {"tag": AFFILIATE_TAG, "urls": [real_product_url]} if 'real_product_url' in locals() else {"tag": AFFILIATE_TAG, "urls": [real_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
@@ -90,7 +94,7 @@ def convert_link(url):
     return f"{real_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
-print("--- CARREGANDO CONFIGURAÇÕES ---", flush=True)
+# Instancia o cliente mas NÃO conecta ainda
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @client.on(events.NewMessage())
@@ -132,36 +136,39 @@ async def handler(event):
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- THREAD DE INICIALIZAÇÃO BLINDADA ---
+# --- CORREÇÃO DA THREAD ASSÍNCRONA ---
 def start_telethon_thread():
+    # Cria um novo loop de eventos para esta thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    print("--- TENTANDO CONECTAR AO TELEGRAM ---", flush=True)
+    async def main_telethon_logic():
+        print("--- TENTANDO CONECTAR (ASYNC) ---", flush=True)
+        try:
+            await client.connect()
+            
+            if not await client.is_user_authorized():
+                print("\n❌❌❌ ERRO: SESSÃO INVÁLIDA ❌❌❌", flush=True)
+                print("Gere uma nova SESSION_STRING no seu PC e atualize no Render.\n", flush=True)
+                return
+
+            print("--- ✅ CONECTADO E MONITORANDO ---", flush=True)
+            await client.run_until_disconnected()
+            
+        except Exception as e:
+            print(f"❌ ERRO CRÍTICO NO CLIENTE: {e}", flush=True)
+
+    # Roda o loop
+    loop.run_until_complete(main_telethon_logic())
+
+if __name__ == '__main__':
+    t = Thread(target=run_web)
+    t.start()
     
-    try:
-        # Tenta conectar
-        client.connect()
-        
-        # VERIFICA SE ESTÁ LOGADO
-        if not client.is_user_authorized():
-            print("\n❌❌❌ ERRO CRÍTICO: SESSÃO INVÁLIDA OU EXPIRADA ❌❌❌", flush=True)
-            print("O bot está esperando login, mas não pode fazer isso no Render.", flush=True)
-            print("SOLUÇÃO: Gere uma nova SESSION_STRING no seu PC e atualize no Render.\n", flush=True)
-            return
-
-        print("--- ✅ LOGIN SUCESSO! MONITORAMENTO ATIVO ---", flush=True)
-        
-        # Mantém rodando
-        client.run_until_disconnected()
-        
-    except Exception as e:
-        print(f"❌ ERRO FATAL NA THREAD DO BOT: {e}", flush=True)
-
-# Inicia a thread IMEDIATAMENTE no escopo global
-t = Thread(target=start_telethon_thread)
-t.daemon = True
-t.start()
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+    # Inicia a thread do bot com a lógica corrigida
+    t2 = Thread(target=start_telethon_thread)
+    t2.daemon = True
+    t2.start()
+    
+    # Mantém a aplicação viva para o Gunicorn
+    t.join()
