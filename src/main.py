@@ -20,6 +20,11 @@ API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 AFFILIATE_TAG = "tepa6477885"
 
+# LISTA DE CANAIS PERMITIDOS (Ids Inteiros)
+ALLOWED_CHATS = [
+    -1002026298205, # Promozone
+]
+
 # CANAL DE DESTINO
 DEST_ENV = os.environ.get("DESTINATION_CHANNEL", "")
 try:
@@ -30,22 +35,12 @@ try:
 except:
     DESTINATION_CHANNEL = DEST_ENV
 
-# --- LISTA DE CANAIS PERMITIDOS (Ids Inteiros) ---
-# Aqui colocamos o ID do Promozone como NÚMERO (sem aspas)
-ALLOWED_CHATS = [
-    -1002026298205, 
-]
-
 # --- FLASK ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V6 - Filtro Interno Ativo"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    return "🤖 Bot Monitor ML - V7 (Debug Auth)"
 
 # --- FUNÇÕES AUXILIARES ---
 def get_all_links(message):
@@ -61,66 +56,46 @@ def get_all_links(message):
     return list(urls)
 
 def resolve_real_url(url):
-    """
-    Segue o redirecionamento dos links /sec/ ou curtos para achar o produto real.
-    """
-    # Se não for link curto, não precisa resolver
     if "/sec/" not in url and "mercado.li" not in url:
         return url.split("?")[0]
-
-    print(f"   🕵️ Resolvendo redirecionamento: {url[:30]}...", flush=True)
+    
+    print(f"   🕵️ Resolvendo: {url[:30]}...", flush=True)
     try:
         session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+        session.headers.update({"User-Agent": "Mozilla/5.0"})
         resp = session.get(url, allow_redirects=True, timeout=10, stream=True)
-        final_url = resp.url
-        clean_final = final_url.split("?")[0]
-        print(f"   ✅ Link Real Descoberto: {clean_final[:40]}...", flush=True)
-        return clean_final
-    except Exception as e:
-        print(f"   ⚠️ Falha ao resolver link: {e}", flush=True)
+        final = resp.url.split("?")[0]
+        print(f"   ✅ Real: {final[:40]}...", flush=True)
+        return final
+    except:
         return url
 
 def convert_link(url):
-    # 1. Primeiro descobre o link real
-    real_product_url = resolve_real_url(url)
-    
-    # 2. Verifica se continua sendo ML
-    if "mercadolivre" not in real_product_url and "mercado.li" not in real_product_url:
+    real_url = resolve_real_url(url)
+    if "mercadolivre" not in real_url and "mercado.li" not in real_url:
         return url
 
-    # 3. Manda para a API Oficial
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": AFFILIATE_TAG, "urls": [real_product_url]}
+    payload = {"tag": AFFILIATE_TAG, "urls": [real_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
         r = requests.post(api_url, json=payload, headers=headers, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            if "links" in data and len(data["links"]) > 0:
-                print("   💰 Link Afiliado Gerado com Sucesso!", flush=True)
-                return data["links"][0]["url"]
+        data = r.json()
+        if "links" in data and len(data["links"]) > 0:
+            return data["links"][0]["url"]
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    return f"{real_product_url}?matt_word={AFFILIATE_TAG}"
+    return f"{real_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
-print("--- INICIANDO CLIENTE ---", flush=True)
+print("--- CARREGANDO CONFIGURAÇÕES ---", flush=True)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-# REMOVEMOS O FILTRO DO DECORATOR PARA EVITAR O ERRO DE STARTUP
 @client.on(events.NewMessage())
 async def handler(event):
-    # --- FILTRO MANUAL ---
-    # Só processa se o ID do chat estiver na lista ALLOWED_CHATS
-    # Nota: Se quiser testar em 'Saved Messages', o ID será positivo (seu ID de usuário)
     if event.chat_id not in ALLOWED_CHATS:
-        # Se quiser descobrir seu ID pessoal para testes, descomente a linha abaixo:
-        # print(f"Ignorando mensagem de: {event.chat_id}", flush=True)
         return
 
     print(f"[NOVA MENSAGEM] Origem Aceita: {event.chat_id}", flush=True)
@@ -136,8 +111,7 @@ async def handler(event):
     main_link = ml_urls[0]
     aff_link = convert_link(main_link)
     
-    original_text = event.message.text or "Confira esta oferta!"
-    
+    original_text = event.message.text or "Confira!"
     for u in ml_urls:
         original_text = original_text.replace(u, "🔗")
     
@@ -151,39 +125,43 @@ async def handler(event):
     try:
         print(f"   -> Enviando para: {DESTINATION_CHANNEL}", flush=True)
         if event.message.media:
-            await client.send_file(
-                DESTINATION_CHANNEL, 
-                event.message.media, 
-                caption=new_caption, 
-                parse_mode="html"
-            )
+            await client.send_file(DESTINATION_CHANNEL, event.message.media, caption=new_caption, parse_mode="html")
         else:
-            await client.send_message(
-                DESTINATION_CHANNEL, 
-                new_caption, 
-                link_preview=True, 
-                parse_mode="html"
-            )
+            await client.send_message(DESTINATION_CHANNEL, new_caption, link_preview=True, parse_mode="html")
         print("🚀 SUCESSO!", flush=True)
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- STARTUP CORRIGIDO ---
+# --- THREAD DE INICIALIZAÇÃO BLINDADA ---
 def start_telethon_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    with client:
-        print("--- MONITORAMENTO ATIVO (FILTRO MANUAL) ---", flush=True)
-        client.run_until_disconnected()
+    
+    print("--- TENTANDO CONECTAR AO TELEGRAM ---", flush=True)
+    
+    try:
+        # Tenta conectar
+        client.connect()
+        
+        # VERIFICA SE ESTÁ LOGADO
+        if not client.is_user_authorized():
+            print("\n❌❌❌ ERRO CRÍTICO: SESSÃO INVÁLIDA OU EXPIRADA ❌❌❌", flush=True)
+            print("O bot está esperando login, mas não pode fazer isso no Render.", flush=True)
+            print("SOLUÇÃO: Gere uma nova SESSION_STRING no seu PC e atualize no Render.\n", flush=True)
+            return
 
-if __name__ == '__main__':
-    t = Thread(target=run_web)
-    t.start()
-    
-    # Inicia a thread do Telethon
-    t2 = Thread(target=start_telethon_thread)
-    t2.daemon = True
-    t2.start()
-    
-    # Mantém o script rodando
-    t.join()
+        print("--- ✅ LOGIN SUCESSO! MONITORAMENTO ATIVO ---", flush=True)
+        
+        # Mantém rodando
+        client.run_until_disconnected()
+        
+    except Exception as e:
+        print(f"❌ ERRO FATAL NA THREAD DO BOT: {e}", flush=True)
+
+# Inicia a thread IMEDIATAMENTE no escopo global
+t = Thread(target=start_telethon_thread)
+t.daemon = True
+t.start()
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8080)
