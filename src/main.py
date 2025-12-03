@@ -11,7 +11,8 @@ import sys
 import logging
 
 # Configura logs
-logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
 
 # --- CONFIGURAÇÕES ---
 API_ID = int(os.environ.get("API_ID", 0))
@@ -29,10 +30,10 @@ try:
 except:
     DESTINATION_CHANNEL = DEST_ENV
 
-# CANAIS PARA MONITORAR
-SOURCE_CHANNELS = [
-    '-1002026298205',
-    'me'
+# --- LISTA DE CANAIS PERMITIDOS (Ids Inteiros) ---
+# Aqui colocamos o ID do Promozone como NÚMERO (sem aspas)
+ALLOWED_CHATS = [
+    -1002026298205, 
 ]
 
 # --- FLASK ---
@@ -40,7 +41,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V5 - Link Resolver Ativo"
+    return "🤖 Sniper Bot V6 - Filtro Interno Ativo"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -63,24 +64,19 @@ def resolve_real_url(url):
     """
     Segue o redirecionamento dos links /sec/ ou curtos para achar o produto real.
     """
-    # Se não for link curto, não precisa resolver (economiza tempo)
+    # Se não for link curto, não precisa resolver
     if "/sec/" not in url and "mercado.li" not in url:
-        return url.split("?")[0] # Só limpa parâmetros
+        return url.split("?")[0]
 
     print(f"   🕵️ Resolvendo redirecionamento: {url[:30]}...", flush=True)
     try:
-        # Fazemos uma requisição HEAD ou GET permitindo redirects
-        # Usamos stream=True para não baixar o HTML inteiro, só ver a URL final
         session = requests.Session()
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         })
         resp = session.get(url, allow_redirects=True, timeout=10, stream=True)
-        
         final_url = resp.url
-        # Limpa parâmetros de rastreio do concorrente (tudo depois de ?)
         clean_final = final_url.split("?")[0]
-        
         print(f"   ✅ Link Real Descoberto: {clean_final[:40]}...", flush=True)
         return clean_final
     except Exception as e:
@@ -88,7 +84,7 @@ def resolve_real_url(url):
         return url
 
 def convert_link(url):
-    # 1. Primeiro descobre o link real do produto (Tira o Promozone da jogada)
+    # 1. Primeiro descobre o link real
     real_product_url = resolve_real_url(url)
     
     # 2. Verifica se continua sendo ML
@@ -110,22 +106,24 @@ def convert_link(url):
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    # Fallback: Adiciona tag manualmente no link limpo
     return f"{real_product_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
 print("--- INICIANDO CLIENTE ---", flush=True)
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+# REMOVEMOS O FILTRO DO DECORATOR PARA EVITAR O ERRO DE STARTUP
+@client.on(events.NewMessage())
 async def handler(event):
-    try:
-        chat = await event.get_chat()
-        chat_title = chat.title if hasattr(chat, 'title') else "Private/Me"
-    except:
-        chat_title = str(event.chat_id)
-        
-    print(f"[NOVA MENSAGEM] Origem: {chat_title}", flush=True)
+    # --- FILTRO MANUAL ---
+    # Só processa se o ID do chat estiver na lista ALLOWED_CHATS
+    # Nota: Se quiser testar em 'Saved Messages', o ID será positivo (seu ID de usuário)
+    if event.chat_id not in ALLOWED_CHATS:
+        # Se quiser descobrir seu ID pessoal para testes, descomente a linha abaixo:
+        # print(f"Ignorando mensagem de: {event.chat_id}", flush=True)
+        return
+
+    print(f"[NOVA MENSAGEM] Origem Aceita: {event.chat_id}", flush=True)
 
     urls = get_all_links(event.message)
     ml_urls = [u for u in urls if "mercadolivre.com" in u or "mercado.li" in u]
@@ -135,13 +133,11 @@ async def handler(event):
 
     print(f"✅ OFERTA ML DETECTADA! ({len(ml_urls)} links)", flush=True)
     
-    # Pega o primeiro link, resolve e afilia
     main_link = ml_urls[0]
     aff_link = convert_link(main_link)
     
     original_text = event.message.text or "Confira esta oferta!"
     
-    # Remove visualmente os links antigos do texto
     for u in ml_urls:
         original_text = original_text.replace(u, "🔗")
     
@@ -172,18 +168,22 @@ async def handler(event):
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- STARTUP ---
-async def startup_check():
-    print("--- VERIFICANDO CANAIS ---")
-    async for dialog in client.iter_dialogs(limit=15):
-        print(f"   - Vejo: {dialog.name} (ID: {dialog.id})")
+# --- STARTUP CORRIGIDO ---
+def start_telethon_thread():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    with client:
+        print("--- MONITORAMENTO ATIVO (FILTRO MANUAL) ---", flush=True)
+        client.run_until_disconnected()
 
 if __name__ == '__main__':
     t = Thread(target=run_web)
     t.start()
     
-    print("--- CONECTANDO... ---", flush=True)
-    with client:
-        client.loop.run_until_complete(startup_check())
-        print("--- MONITORAMENTO ATIVO ---", flush=True)
-        client.run_until_disconnected()
+    # Inicia a thread do Telethon
+    t2 = Thread(target=start_telethon_thread)
+    t2.daemon = True
+    t2.start()
+    
+    # Mantém o script rodando
+    t.join()
