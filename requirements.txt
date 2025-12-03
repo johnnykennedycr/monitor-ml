@@ -3,3 +3,5 @@ schedule
 cloudscraper
 beautifulsoup4
 requests
+flask
+gunicorn
