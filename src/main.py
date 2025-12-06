@@ -40,11 +40,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V8 - Async Fixed!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    return "🤖 Sniper Bot V9 - Gunicorn Fixed"
 
 # --- FUNÇÕES AUXILIARES ---
 def get_all_links(message):
@@ -94,7 +90,6 @@ def convert_link(url):
     return f"{real_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
-# Instancia o cliente mas NÃO conecta ainda
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 @client.on(events.NewMessage())
@@ -136,9 +131,8 @@ async def handler(event):
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- CORREÇÃO DA THREAD ASSÍNCRONA ---
+# --- THREAD DE INICIALIZAÇÃO ---
 def start_telethon_thread():
-    # Cria um novo loop de eventos para esta thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -149,7 +143,6 @@ def start_telethon_thread():
             
             if not await client.is_user_authorized():
                 print("\n❌❌❌ ERRO: SESSÃO INVÁLIDA ❌❌❌", flush=True)
-                print("Gere uma nova SESSION_STRING no seu PC e atualize no Render.\n", flush=True)
                 return
 
             print("--- ✅ CONECTADO E MONITORANDO ---", flush=True)
@@ -158,17 +151,14 @@ def start_telethon_thread():
         except Exception as e:
             print(f"❌ ERRO CRÍTICO NO CLIENTE: {e}", flush=True)
 
-    # Roda o loop
     loop.run_until_complete(main_telethon_logic())
 
+# --- A MÁGICA ACONTECE AQUI (FORA DO MAIN) ---
+# Iniciamos a thread assim que o arquivo é lido pelo Gunicorn
+t = Thread(target=start_telethon_thread)
+t.daemon = True
+t.start()
+
 if __name__ == '__main__':
-    t = Thread(target=run_web)
-    t.start()
-    
-    # Inicia a thread do bot com a lógica corrigida
-    t2 = Thread(target=start_telethon_thread)
-    t2.daemon = True
-    t2.start()
-    
-    # Mantém a aplicação viva para o Gunicorn
-    t.join()
+    # Isso só roda no seu PC, não no Render
+    app.run(host='0.0.0.0', port=8080)
