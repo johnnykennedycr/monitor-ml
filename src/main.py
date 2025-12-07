@@ -9,6 +9,7 @@ from telethon.tl.types import MessageEntityTextUrl
 import requests
 import sys
 import logging
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 # Configura logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,7 +20,7 @@ API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 AFFILIATE_TAG = "tepa6477885"
-MY_SOCIAL_HANDLE = "tepa6477885" # Seu nome na URL social
+MY_SOCIAL_HANDLE = "tepa6477885"
 
 # CANAL DE DESTINO
 DEST_ENV = os.environ.get("DESTINATION_CHANNEL", "")
@@ -41,7 +42,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V12 - Social Hijack Active"
+    return "🤖 Sniper Bot V13 - Surgical URL Clean"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -60,60 +61,90 @@ def get_all_links(message):
                 urls.add(entity.url)
     return list(urls)
 
+def hijack_social_url(url):
+    """
+    Substitui cirurgicamente o dono da loja social e o parâmetro de afiliado.
+    """
+    try:
+        parsed = urlparse(url)
+        
+        # 1. Troca o caminho (Path) -> /social/novo_dono
+        path_parts = parsed.path.split('/')
+        new_path_parts = []
+        for part in path_parts:
+            # Se for o nome do concorrente (logo depois de social), troca
+            if 'social' in new_path_parts:
+                new_path_parts.append(MY_SOCIAL_HANDLE)
+            else:
+                new_path_parts.append(part)
+        
+        # Reconstrói o caminho se a lógica acima falhar (regex fallback)
+        new_path = "/".join(new_path_parts)
+        if MY_SOCIAL_HANDLE not in new_path:
+             new_path = re.sub(r'/social/[^/]+', f'/social/{MY_SOCIAL_HANDLE}', parsed.path)
+
+        # 2. Troca os parâmetros (Query) -> matt_word=minha_tag
+        query_params = parse_qs(parsed.query)
+        query_params['matt_word'] = [AFFILIATE_TAG] # Força sua tag
+        
+        # Remove ferramentas de rastreio de terceiros se quiser
+        if 'matt_tool' in query_params:
+            del query_params['matt_tool']
+
+        new_query = urlencode(query_params, doseq=True)
+        
+        # 3. Reconstrói a URL final
+        new_url = urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, new_query, parsed.fragment))
+        return new_url
+        
+    except Exception as e:
+        print(f"   ⚠️ Erro no Hijack: {e}. Usando fallback simples.", flush=True)
+        # Fallback bruto se o parser falhar
+        return f"https://www.mercadolivre.com.br/social/{MY_SOCIAL_HANDLE}?matt_word={AFFILIATE_TAG}"
+
 def extract_clean_ml_link(dirty_url):
-    """
-    1. Resolve redirecionamento.
-    2. Tenta extrair produto (MLB).
-    3. Se falhar, faz hijacking da URL social trocando o dono.
-    """
     final_url = dirty_url
     
     # 1. Resolve redirecionamentos
     if "/sec/" in dirty_url or "mercado.li" in dirty_url or "bit.ly" in dirty_url:
-        print(f"   🕵️ Resolvendo: {dirty_url[:30]}...", flush=True)
+        print(f"   🕵️ Resolvendo: {dirty_url}...", flush=True)
         try:
             session = requests.Session()
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            })
+            session.headers.update({"User-Agent": "Mozilla/5.0"})
             resp = session.get(dirty_url, allow_redirects=True, timeout=10, stream=True)
             final_url = resp.url
-        except Exception as e:
-            print(f"   ⚠️ Falha ao resolver: {e}", flush=True)
+        except:
+            pass
 
-    # 2. TENTA EXTRAIR ID DO PRODUTO (Melhor cenário)
+    # 2. TENTA EXTRAIR ID DO PRODUTO (Prioridade Máxima)
     match = re.search(r'(MLB-?\d+)', final_url)
     if match:
-        raw_id = match.group(1)
-        clean_id = raw_id.replace("-", "")
+        clean_id = match.group(1).replace("-", "")
         clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
         print(f"   ✨ Produto MLB encontrado: {clean_id}", flush=True)
         return clean_link
     
     # 3. FALLBACK: SEQUESTRO DE LINK SOCIAL
-    # Se não achou MLB, mas é um link social, trocamos o dono.
     if "/social/" in final_url:
-        print("   🔄 Link Social detectado. Trocando dono...", flush=True)
-        # Substitui o nome do concorrente pelo seu
-        # Regex procura: /social/QUALQUER_COISA até o próximo / ou ?
-        swapped_url = re.sub(r'/social/[^/?]+', f'/social/{MY_SOCIAL_HANDLE}', final_url)
-        print(f"   ✅ Novo Link Social: {swapped_url[:40]}...", flush=True)
-        return swapped_url
+        print("   🔄 Link Social detectado. Realizando Hijack...", flush=True)
+        new_social = hijack_social_url(final_url)
+        print(f"   ✅ URL Social Dominada: {new_social}", flush=True)
+        return new_social
 
-    # 4. Último caso: limpa parâmetros
-    print("   ⚠️ Nada encontrado. Usando URL limpa genérica.", flush=True)
+    # 4. Fallback final
     return final_url.split("?")[0]
 
 def convert_link(url):
-    # Passa pela limpeza inteligente
     clean_url = extract_clean_ml_link(url)
     
     if "mercadolivre" not in clean_url and "mercado.li" not in clean_url:
         return url
 
-    # Se o link já for o seu social (do passo 3 acima), não precisa mandar pra API de novo,
-    # mas mandar garante o tracking correto do 'matt_word'.
-    
+    # Se já fizemos o hijack social, retorna direto
+    if "/social/" in clean_url and MY_SOCIAL_HANDLE in clean_url:
+        return clean_url
+
+    # Se é link de produto, tenta API oficial
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
     payload = {"tag": AFFILIATE_TAG, "urls": [clean_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -128,9 +159,6 @@ def convert_link(url):
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    # Fallback manual
-    if "?" in clean_url:
-        return f"{clean_url}&matt_word={AFFILIATE_TAG}"
     return f"{clean_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
@@ -154,24 +182,35 @@ async def handler(event):
     main_link = ml_urls[0]
     aff_link = convert_link(main_link)
     
+    # Limpa texto original
     original_text = event.message.text or "Confira!"
-    
     for u in ml_urls:
-        original_text = original_text.replace(u, "🔗")
+        original_text = original_text.replace(u, "") # Remove a URL antiga do texto
     
+    # NOVA LEGENDA COM LINK CLICÁVEL (HTML)
     new_caption = (
-        f"{original_text}\n\n"
+        f"{original_text.strip()}\n\n"
         f"🔥 <b>OFERTA DETECTADA</b>\n"
-        f"👇 <b>COMPRE AQUI:</b>\n"
-        f"👉 {aff_link}"
+        f"👇 <b>CLIQUE PARA COMPRAR:</b>\n"
+        f"➡️ <a href='{aff_link}'>ACESSAR OFERTA NO SITE</a>"
     )
     
     try:
-        print(f"   -> Enviando para: {DESTINATION_CHANNEL}", flush=True)
+        print(f"   -> Enviando...", flush=True)
         if event.message.media:
-            await client.send_file(DESTINATION_CHANNEL, event.message.media, caption=new_caption, parse_mode="html")
+            await client.send_file(
+                DESTINATION_CHANNEL, 
+                event.message.media, 
+                caption=new_caption, 
+                parse_mode="html"
+            )
         else:
-            await client.send_message(DESTINATION_CHANNEL, new_caption, link_preview=True, parse_mode="html")
+            await client.send_message(
+                DESTINATION_CHANNEL, 
+                new_caption, 
+                link_preview=True, 
+                parse_mode="html"
+            )
         print("🚀 SUCESSO!", flush=True)
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
@@ -180,7 +219,6 @@ async def handler(event):
 def start_telethon_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
     async def main_telethon_logic():
         print("--- TENTANDO CONECTAR (ASYNC) ---", flush=True)
         try:
@@ -192,7 +230,6 @@ def start_telethon_thread():
             await client.run_until_disconnected()
         except Exception as e:
             print(f"❌ ERRO CRÍTICO NO CLIENTE: {e}", flush=True)
-
     loop.run_until_complete(main_telethon_logic())
 
 t = Thread(target=start_telethon_thread)
