@@ -40,7 +40,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V10 - MLB Cleaner Active"
+    return "🤖 Sniper Bot V11 - Social Cleaner Active"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -61,46 +61,55 @@ def get_all_links(message):
 
 def extract_clean_ml_link(dirty_url):
     """
-    1. Resolve o redirecionamento (/sec/).
-    2. Procura pelo ID do produto (MLB...) na URL final.
-    3. Retorna um link limpo apenas com o produto, removendo o concorrente.
+    Desmonta o link do concorrente, acha o ID do produto e cria um link novo.
     """
     final_url = dirty_url
     
-    # 1. Resolve redirecionamento se necessário
-    if "/sec/" in dirty_url or "mercado.li" in dirty_url:
-        print(f"   🕵️ Resolvendo: {dirty_url[:30]}...", flush=True)
+    # 1. Resolve redirecionamentos (/sec/, bit.ly, etc)
+    if "/sec/" in dirty_url or "mercado.li" in dirty_url or "bit.ly" in dirty_url:
+        print(f"   🕵️ Resolvendo Redirecionamento: {dirty_url[:30]}...", flush=True)
         try:
             session = requests.Session()
-            session.headers.update({"User-Agent": "Mozilla/5.0"})
+            # Headers de navegador para evitar bloqueios ou links mobile
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            })
             resp = session.get(dirty_url, allow_redirects=True, timeout=10, stream=True)
             final_url = resp.url
-        except:
-            pass
+        except Exception as e:
+            print(f"   ⚠️ Falha ao resolver: {e}", flush=True)
 
-    # 2. PROCURA PELO CÓDIGO MLB (A MÁGICA)
-    # Padrões comuns: /p/MLB123, /MLB-123, ?item_id=MLB123
-    mlb_match = re.search(r'(MLB-?\d+)', final_url)
+    # 2. CAÇA AO TESOURO: Procura o ID 'MLB' na URL final
+    # Pode estar em: /p/MLB123, /MLB-123, ?item_id=MLB123
+    match = re.search(r'(MLB-?\d+)', final_url)
     
-    if mlb_match:
-        clean_id = mlb_match.group(1).replace("-", "") # Padroniza para MLB12345
+    if match:
+        # Achamos o ID! (Ex: MLB-123456)
+        raw_id = match.group(1)
+        clean_id = raw_id.replace("-", "") # Vira MLB123456
+        
+        # RECONSTRUÇÃO TOTAL: Cria um link limpo padrão
+        # Isso remove "social/promozone", parâmetros de tracking, tudo.
         clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
-        print(f"   ✨ Produto Identificado: {clean_id} (Link Limpo Gerado)", flush=True)
+        print(f"   ✨ Produto Identificado: {clean_id}. Link Limpo Gerado.", flush=True)
         return clean_link
     
-    # Se não achou MLB (ex: link de categoria), retorna a URL resolvida limpa de parametros
-    print("   ⚠️ ID MLB não encontrado, usando link resolvido genérico.", flush=True)
+    # Se não achou MLB, tenta limpar apenas os parâmetros
+    print("   ⚠️ ID MLB não encontrado. Usando URL resolvida limpa.", flush=True)
     return final_url.split("?")[0]
 
 def convert_link(url):
-    # Passa pela "Lavanderia" para tirar o Promozone da jogada
+    # 1. Limpa o link (Remove Promozone)
     clean_product_url = extract_clean_ml_link(url)
     
-    # Verifica se continua sendo ML
+    # 2. Verifica se é válido
     if "mercadolivre" not in clean_product_url and "mercado.li" not in clean_product_url:
         return url
 
-    # Manda para a API Oficial (que vai aplicar o SEU Social Profile automaticamente se configurado no ML)
+    # 3. Gera seu link de afiliado
+    # A API vai transformar o link "limpo" no seu link social (se sua conta for social)
+    # ou no link de produto com sua tag.
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
     payload = {"tag": AFFILIATE_TAG, "urls": [clean_product_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -115,7 +124,7 @@ def convert_link(url):
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    # Fallback
+    # Fallback: Se a API falhar, adiciona a tag no link LIMPO (não no do promozone)
     return f"{clean_product_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
@@ -136,13 +145,13 @@ async def handler(event):
 
     print(f"✅ OFERTA ML DETECTADA! ({len(ml_urls)} links)", flush=True)
     
+    # Processa o primeiro link encontrado
     main_link = ml_urls[0]
-    # Aqui ocorre a conversão com limpeza
     aff_link = convert_link(main_link)
     
     original_text = event.message.text or "Confira!"
     
-    # Substitui links antigos por emoji
+    # Troca todos os links antigos por 🔗 para limpar o visual
     for u in ml_urls:
         original_text = original_text.replace(u, "🔗")
     
@@ -163,7 +172,7 @@ async def handler(event):
     except Exception as e:
         print(f"❌ ERRO AO POSTAR: {e}", flush=True)
 
-# --- THREAD DE INICIALIZAÇÃO ---
+# --- STARTUP ---
 def start_telethon_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
