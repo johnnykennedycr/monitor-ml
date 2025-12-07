@@ -11,8 +11,8 @@ import sys
 import logging
 
 # Configura logs
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
 
 # --- CONFIGURAÇÕES ---
 API_ID = int(os.environ.get("API_ID", 0))
@@ -40,7 +40,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V9 - Gunicorn Fixed"
+    return "🤖 Sniper Bot V10 - MLB Cleaner Active"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # --- FUNÇÕES AUXILIARES ---
 def get_all_links(message):
@@ -55,39 +59,64 @@ def get_all_links(message):
                 urls.add(entity.url)
     return list(urls)
 
-def resolve_real_url(url):
-    if "/sec/" not in url and "mercado.li" not in url:
-        return url.split("?")[0]
+def extract_clean_ml_link(dirty_url):
+    """
+    1. Resolve o redirecionamento (/sec/).
+    2. Procura pelo ID do produto (MLB...) na URL final.
+    3. Retorna um link limpo apenas com o produto, removendo o concorrente.
+    """
+    final_url = dirty_url
     
-    print(f"   🕵️ Resolvendo: {url[:30]}...", flush=True)
-    try:
-        session = requests.Session()
-        session.headers.update({"User-Agent": "Mozilla/5.0"})
-        resp = session.get(url, allow_redirects=True, timeout=10, stream=True)
-        final = resp.url.split("?")[0]
-        print(f"   ✅ Real: {final[:40]}...", flush=True)
-        return final
-    except:
-        return url
+    # 1. Resolve redirecionamento se necessário
+    if "/sec/" in dirty_url or "mercado.li" in dirty_url:
+        print(f"   🕵️ Resolvendo: {dirty_url[:30]}...", flush=True)
+        try:
+            session = requests.Session()
+            session.headers.update({"User-Agent": "Mozilla/5.0"})
+            resp = session.get(dirty_url, allow_redirects=True, timeout=10, stream=True)
+            final_url = resp.url
+        except:
+            pass
+
+    # 2. PROCURA PELO CÓDIGO MLB (A MÁGICA)
+    # Padrões comuns: /p/MLB123, /MLB-123, ?item_id=MLB123
+    mlb_match = re.search(r'(MLB-?\d+)', final_url)
+    
+    if mlb_match:
+        clean_id = mlb_match.group(1).replace("-", "") # Padroniza para MLB12345
+        clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
+        print(f"   ✨ Produto Identificado: {clean_id} (Link Limpo Gerado)", flush=True)
+        return clean_link
+    
+    # Se não achou MLB (ex: link de categoria), retorna a URL resolvida limpa de parametros
+    print("   ⚠️ ID MLB não encontrado, usando link resolvido genérico.", flush=True)
+    return final_url.split("?")[0]
 
 def convert_link(url):
-    real_url = resolve_real_url(url)
-    if "mercadolivre" not in real_url and "mercado.li" not in real_url:
+    # Passa pela "Lavanderia" para tirar o Promozone da jogada
+    clean_product_url = extract_clean_ml_link(url)
+    
+    # Verifica se continua sendo ML
+    if "mercadolivre" not in clean_product_url and "mercado.li" not in clean_product_url:
         return url
 
+    # Manda para a API Oficial (que vai aplicar o SEU Social Profile automaticamente se configurado no ML)
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": AFFILIATE_TAG, "urls": [real_product_url]} if 'real_product_url' in locals() else {"tag": AFFILIATE_TAG, "urls": [real_url]}
+    payload = {"tag": AFFILIATE_TAG, "urls": [clean_product_url]}
     headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
         r = requests.post(api_url, json=payload, headers=headers, timeout=5)
-        data = r.json()
-        if "links" in data and len(data["links"]) > 0:
-            return data["links"][0]["url"]
+        if r.status_code == 200:
+            data = r.json()
+            if "links" in data and len(data["links"]) > 0:
+                print("   💰 Link Afiliado Gerado com Sucesso!", flush=True)
+                return data["links"][0]["url"]
     except Exception as e:
         print(f"   [ERRO API] {e}", flush=True)
     
-    return f"{real_url}?matt_word={AFFILIATE_TAG}"
+    # Fallback
+    return f"{clean_product_url}?matt_word={AFFILIATE_TAG}"
 
 # --- ROBÔ TELEGRAM ---
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
@@ -108,9 +137,12 @@ async def handler(event):
     print(f"✅ OFERTA ML DETECTADA! ({len(ml_urls)} links)", flush=True)
     
     main_link = ml_urls[0]
+    # Aqui ocorre a conversão com limpeza
     aff_link = convert_link(main_link)
     
     original_text = event.message.text or "Confira!"
+    
+    # Substitui links antigos por emoji
     for u in ml_urls:
         original_text = original_text.replace(u, "🔗")
     
@@ -140,25 +172,19 @@ def start_telethon_thread():
         print("--- TENTANDO CONECTAR (ASYNC) ---", flush=True)
         try:
             await client.connect()
-            
             if not await client.is_user_authorized():
                 print("\n❌❌❌ ERRO: SESSÃO INVÁLIDA ❌❌❌", flush=True)
                 return
-
             print("--- ✅ CONECTADO E MONITORANDO ---", flush=True)
             await client.run_until_disconnected()
-            
         except Exception as e:
             print(f"❌ ERRO CRÍTICO NO CLIENTE: {e}", flush=True)
 
     loop.run_until_complete(main_telethon_logic())
 
-# --- A MÁGICA ACONTECE AQUI (FORA DO MAIN) ---
-# Iniciamos a thread assim que o arquivo é lido pelo Gunicorn
 t = Thread(target=start_telethon_thread)
 t.daemon = True
 t.start()
 
 if __name__ == '__main__':
-    # Isso só roda no seu PC, não no Render
     app.run(host='0.0.0.0', port=8080)
