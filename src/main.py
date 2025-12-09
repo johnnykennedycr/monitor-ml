@@ -43,10 +43,10 @@ def get_ml_data(url):
     print(f"🔎 Iniciando Scraping: {url}", flush=True)
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'mobile': False})
     
-    # Estrutura inicial
     data = {
         "title": "Oferta Imperdível", 
-        "price_text": "Ver no site" # Texto final que vai pro post
+        "price_text": "Ver no site",
+        "image_url": None # Campo novo para a imagem
     }
     
     try:
@@ -57,36 +57,38 @@ def get_ml_data(url):
         title = soup.find("h1", class_="ui-pdp-title")
         if title: data["title"] = title.text.strip()
         
-        # 2. PREÇO NOVO (O valor real de venda)
+        # 2. PREÇOS (Novo e Antigo)
         new_price = None
         price_meta = soup.find("meta", property="product:price:amount")
-        if price_meta:
-            new_price = format_price(price_meta["content"])
+        if price_meta: new_price = format_price(price_meta["content"])
             
-        # 3. PREÇO ANTIGO (O valor riscado "De:")
         old_price = None
-        # Procura por tags de preço riscado (<s> ou classes específicas)
-        # O ML usa classes como 'ui-pdp-price__original-value' ou 'andes-money-amount--previous'
-        old_price_tag = soup.find("s", class_="andes-money-amount--previous")
-        
-        if not old_price_tag:
-            # Tenta outra classe comum
-            old_price_tag = soup.find("s", class_="ui-pdp-price__original-value")
+        # Tenta diferentes classes para o preço riscado
+        old_price_tag = soup.find("s", class_="andes-money-amount--previous") or \
+                        soup.find("s", class_="ui-pdp-price__original-value")
             
         if old_price_tag:
-            # O texto vem sujo (ex: "R$ 100"), usamos get_text para limpar
-            # As vezes o simbolo R$ está separado, o get_text junta tudo
             old_price = old_price_tag.get_text(separator=" ", strip=True)
-            # Remove espaços duplos
             old_price = " ".join(old_price.split())
 
-        # 4. MONTAGEM DA STRING DE PREÇO
         if old_price and new_price:
             data["price_text"] = f"DE {old_price} | POR {new_price}"
         elif new_price:
             data["price_text"] = f"{new_price}"
         else:
             data["price_text"] = "CONFIRA NO SITE"
+
+        # --- 5. EXTRAÇÃO DA IMAGEM PRINCIPAL (NOVO) ---
+        # Tenta encontrar a imagem principal da galeria
+        image_tag = soup.find("img", class_="ui-pdp-image")
+        
+        if image_tag:
+            # O ML às vezes usa lazy loading, então a URL real pode estar em 'data-src'
+            # Preferimos 'data-src', se não tiver, pegamos 'src'
+            img_url = image_tag.get("data-src") or image_tag.get("src")
+            if img_url and img_url.startswith("http"):
+                data["image_url"] = img_url
+                print(f"🖼️ Imagem encontrada: {img_url}", flush=True)
 
         print(f"✅ Scraping concluído: {data}", flush=True)
         return data
@@ -122,7 +124,7 @@ def generate_affiliate_link(url, tag):
 
 # --- ROTAS FLASK ---
 @app.route('/')
-def home(): return "🤖 Bot V14 - Preço Duplo Ativo!"
+def home(): return "🤖 Bot V15 - Com Imagens Ativo!"
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def process_webhook():
@@ -150,15 +152,16 @@ def handle_text_messages(message):
     text = message.text.strip()
     
     if "mercadolivre" in text or "mercado.li" in text:
-        msg = bot.reply_to(message, "⏳ **Analisando Preços...**", parse_mode="Markdown")
+        msg = bot.reply_to(message, "⏳ **Analisando Oferta e Imagem...**", parse_mode="Markdown")
         try:
             product_data = get_ml_data(text)
             aff_link = generate_affiliate_link(text, AFFILIATE_TAG)
             
-            # Armazena os dados
+            # Armazena os dados INCLUINDO A IMAGEM
             user_steps[message.chat.id] = {
                 "title": product_data.get("title", "Oferta"),
-                "detected_price": product_data.get("price_text"), # Guarda o texto formatado (De/Por)
+                "detected_price": product_data.get("price_text"),
+                "image_url": product_data.get("image_url"), # Guarda a URL da imagem
                 "final_link": aff_link,
                 "raw_link": text
             }
@@ -212,23 +215,16 @@ def step_coupon(message):
     if txt == "/skip": txt = None
     if message.chat.id in user_steps:
         user_steps[message.chat.id]["coupon"] = txt
-        
-        # Mostra o preço detectado (De/Por) e permite editar
         curr = user_steps[message.chat.id].get("detected_price", "N/A")
-        msg = bot.reply_to(message, 
-                           f"💰 **Preço da Oferta**\n"
-                           f"Detectado: `{curr}`\n\n"
-                           "Digite para corrigir ou /skip para usar o detectado.", 
-                           parse_mode="Markdown")
+        msg = bot.reply_to(message, f"💰 **Preço?** (Atual: {curr})\nDigite novo ou /skip")
         bot.register_next_step_handler(msg, step_price)
 
 def step_price(message):
     txt = message.text
-    # Se o usuário digitar algo, substitui o preço automático
     if txt != "/skip" and message.chat.id in user_steps:
         user_steps[message.chat.id]["detected_price"] = txt
     
-    msg = bot.reply_to(message, "🎥 **Vídeo?** (Envie ou /skip)")
+    msg = bot.reply_to(message, "🎥 **Mídia Manual?** (Envie Foto/Vídeo ou /skip para usar a do site)")
     bot.register_next_step_handler(message, step_video)
 
 def step_video(message):
@@ -236,23 +232,34 @@ def step_video(message):
     if not data: return
 
     headline = data.get('custom_msg', '').upper()
-    title = f"📦 {data['title']}"
-    # Usa o preço que veio do scraper ou o que o usuário editou
-    price = f"🔥 {data['detected_price']}" 
+    title = f"❄️ {data['title']}"
+    price = f"🔥 {data['detected_price']}"
     coupon = f"\n🎟 CUPOM: {data['coupon']}" if data.get('coupon') else ""
     link = f"\n🔗 {data['final_link']}"
     
-    final_text = f"{headline}\n\n{title}\n\n{price}{coupon}\n{link}"
+    # Usa HTML para poder formatar e usar links
+    final_text = f"<b>{headline}</b>\n\n{title}\n\n{price}{coupon}\n{link}"
     target = data['target_id']
+    scraped_image = data.get('image_url')
     
     try:
+        # LÓGICA DE ENVIO INTELIGENTE
+        # 1. Prioridade: Mídia enviada manualmente agora
         if message.content_type == 'video':
-            bot.send_video(target, message.video.file_id, caption=final_text)
+            bot.send_video(target, message.video.file_id, caption=final_text, parse_mode="HTML")
         elif message.content_type == 'photo':
-            bot.send_photo(target, message.photo[-1].file_id, caption=final_text)
+            bot.send_photo(target, message.photo[-1].file_id, caption=final_text, parse_mode="HTML")
+        
+        # 2. Se deu /skip E temos imagem raspada do site
+        elif scraped_image and message.text == "/skip":
+             print(f"📤 Enviando com imagem do site: {scraped_image}", flush=True)
+             bot.send_photo(target, scraped_image, caption=final_text, parse_mode="HTML")
+             
+        # 3. Último caso: Texto puro (se não tem mídia manual nem imagem no site)
         else:
-            bot.send_message(target, final_text, disable_web_page_preview=False)
-        bot.reply_to(message, "✅ **Postado!**")
+            bot.send_message(target, final_text, disable_web_page_preview=False, parse_mode="HTML")
+            
+        bot.reply_to(message, "✅ **Postado com sucesso!**")
     except Exception as e:
         bot.reply_to(message, f"❌ Erro envio: {e}")
     
