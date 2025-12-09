@@ -27,50 +27,88 @@ GROUPS = {
 
 user_steps = {}
 
-# --- CRIAÇÃO DO BOT (MODO SÍNCRONO) ---
-# threaded=False é essencial para Webhooks no Render/Gunicorn
+# --- BOT SÍNCRONO ---
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- FUNÇÕES UTILITÁRIAS ---
+# --- FUNÇÕES DE EXTRAÇÃO ---
+def format_price(value):
+    try:
+        val = float(value)
+        return f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except:
+        return value
+
 def get_ml_data(url):
     print(f"🔎 Iniciando Scraping: {url}", flush=True)
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'mobile': False})
-    data = {"title": "Oferta Imperdível", "price": None}
+    
+    # Estrutura inicial
+    data = {
+        "title": "Oferta Imperdível", 
+        "price_text": "Ver no site" # Texto final que vai pro post
+    }
+    
     try:
         resp = scraper.get(url, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 1. TÍTULO
         title = soup.find("h1", class_="ui-pdp-title")
         if title: data["title"] = title.text.strip()
+        
+        # 2. PREÇO NOVO (O valor real de venda)
+        new_price = None
         price_meta = soup.find("meta", property="product:price:amount")
-        if price_meta: 
-            try:
-                val = float(price_meta["content"])
-                data["price"] = f"R$ {val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            except: pass
+        if price_meta:
+            new_price = format_price(price_meta["content"])
+            
+        # 3. PREÇO ANTIGO (O valor riscado "De:")
+        old_price = None
+        # Procura por tags de preço riscado (<s> ou classes específicas)
+        # O ML usa classes como 'ui-pdp-price__original-value' ou 'andes-money-amount--previous'
+        old_price_tag = soup.find("s", class_="andes-money-amount--previous")
+        
+        if not old_price_tag:
+            # Tenta outra classe comum
+            old_price_tag = soup.find("s", class_="ui-pdp-price__original-value")
+            
+        if old_price_tag:
+            # O texto vem sujo (ex: "R$ 100"), usamos get_text para limpar
+            # As vezes o simbolo R$ está separado, o get_text junta tudo
+            old_price = old_price_tag.get_text(separator=" ", strip=True)
+            # Remove espaços duplos
+            old_price = " ".join(old_price.split())
+
+        # 4. MONTAGEM DA STRING DE PREÇO
+        if old_price and new_price:
+            data["price_text"] = f"DE {old_price} | POR {new_price}"
+        elif new_price:
+            data["price_text"] = f"{new_price}"
+        else:
+            data["price_text"] = "CONFIRA NO SITE"
+
         print(f"✅ Scraping concluído: {data}", flush=True)
         return data
+
     except Exception as e:
         print(f"❌ Erro Scraping: {e}", flush=True)
         return data
 
 def generate_affiliate_link(url, tag):
     final_url = url
-    # 1. Resolve redirecionamento
     if "/sec/" in url or "mercado.li" in url or "bit.ly" in url:
         try:
             resp = requests.get(url, allow_redirects=True, timeout=10)
             final_url = resp.url
         except: pass
 
-    # 2. Busca ID MLB
     clean_link = final_url.split("?")[0]
     match = re.search(r'(MLB-?\d+)', final_url)
     if match:
         clean_id = match.group(1).replace("-", "")
         clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
     
-    # 3. API
     api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
     payload = {"tag": tag, "urls": [clean_link]}
     try:
@@ -84,57 +122,43 @@ def generate_affiliate_link(url, tag):
 
 # --- ROTAS FLASK ---
 @app.route('/')
-def home():
-    return "🤖 Bot Síncrono Ativo!"
+def home(): return "🤖 Bot V14 - Preço Duplo Ativo!"
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def process_webhook():
     try:
-        # Recebe e processa na mesma thread (Síncrono)
         json_string = request.get_data().decode('utf-8')
-        print("📨 Webhook recebeu dados...", flush=True)
         update = Update.de_json(json_string)
         bot.process_new_updates([update])
         return Response('OK', status=200)
     except Exception as e:
-        print(f"❌ Erro Crítico no Webhook: {e}", flush=True)
+        print(f"❌ Erro Webhook: {e}", flush=True)
         return Response('Error', status=500)
 
-# --- HANDLERS DO BOT ---
-
+# --- BOT LÓGICA ---
 @bot.message_handler(commands=['ids', 'start'])
 def command_ids(message):
-    print(f"⚡ Comando recebido de {message.from_user.id}", flush=True)
     bot.reply_to(message, f"🆔 Seu ID: `{message.from_user.id}`", parse_mode="Markdown")
 
-# HANDLER PRINCIPAL - Aceita Texto
 @bot.message_handler(content_types=['text'])
 def handle_text_messages(message):
-    user_id = str(message.from_user.id)
-    print(f"⚡ Mensagem de Texto de {user_id}: {message.text}", flush=True)
-    
-    # Verificação de Admin com Log
-    if ADMIN_ID:
-        # Limpa espaços em branco para evitar erro de string
-        env_admin = str(ADMIN_ID).strip()
-        msg_admin = user_id.strip()
-        
-        if msg_admin != env_admin:
-            print(f"⛔ Bloqueado: {msg_admin} != {env_admin}", flush=True)
-            bot.reply_to(message, f"⛔ Acesso Negado.\nSeu ID: `{msg_admin}`\nConfigurado: `{env_admin}`", parse_mode="Markdown")
-            return
+    user_id = str(message.from_user.id).strip()
+    if ADMIN_ID and user_id != str(ADMIN_ID).strip():
+        bot.reply_to(message, "⛔ Acesso Negado.")
+        return
     
     text = message.text.strip()
     
     if "mercadolivre" in text or "mercado.li" in text:
-        msg = bot.reply_to(message, "⏳ **Extraindo dados... Aguarde.**", parse_mode="Markdown")
+        msg = bot.reply_to(message, "⏳ **Analisando Preços...**", parse_mode="Markdown")
         try:
             product_data = get_ml_data(text)
             aff_link = generate_affiliate_link(text, AFFILIATE_TAG)
             
+            # Armazena os dados
             user_steps[message.chat.id] = {
                 "title": product_data.get("title", "Oferta"),
-                "original_price": product_data.get("price"),
+                "detected_price": product_data.get("price_text"), # Guarda o texto formatado (De/Por)
                 "final_link": aff_link,
                 "raw_link": text
             }
@@ -144,8 +168,8 @@ def handle_text_messages(message):
             markup.row(InlineKeyboardButton("🏠 Util", callback_data="grp_util"), InlineKeyboardButton("❌ Cancelar", callback_data="cancel"))
             
             bot.edit_message_text(
-                f"📦 **{product_data.get('title')}**\n"
-                f"💰 {product_data.get('price')}\n\n"
+                f"📦 **{user_steps[message.chat.id]['title']}**\n"
+                f"💰 **{user_steps[message.chat.id]['detected_price']}**\n\n"
                 "**Para qual grupo enviar?** 👇",
                 chat_id=message.chat.id,
                 message_id=msg.message_id,
@@ -153,17 +177,12 @@ def handle_text_messages(message):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            print(f"❌ Erro logica: {e}", flush=True)
             bot.edit_message_text(f"❌ Erro: {e}", chat_id=message.chat.id, message_id=msg.message_id)
     else:
-        print("⚠️ Texto ignorado (não é link ML)", flush=True)
-        bot.reply_to(message, "Mande um link do Mercado Livre.")
+        bot.reply_to(message, "Mande um link do ML.")
 
-# HANDLER DE CALLBACKS (Botões)
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    print(f"⚡ Callback: {call.data}", flush=True)
-    
     if call.data == "cancel":
         bot.delete_message(call.message.chat.id, call.message.message_id)
         user_steps.pop(call.message.chat.id, None)
@@ -173,7 +192,7 @@ def callback_handler(call):
         grp = call.data.replace("grp_", "")
         target = GROUPS.get(grp)
         if not target:
-            bot.answer_callback_query(call.id, "❌ ID do grupo não configurado!")
+            bot.answer_callback_query(call.id, "❌ ID não configurado!")
             return
         
         user_steps[call.message.chat.id]["target_id"] = target
@@ -193,14 +212,22 @@ def step_coupon(message):
     if txt == "/skip": txt = None
     if message.chat.id in user_steps:
         user_steps[message.chat.id]["coupon"] = txt
-        curr = user_steps[message.chat.id].get("original_price", "N/A")
-        msg = bot.reply_to(message, f"💰 **Preço?** (Atual: {curr})\nDigite novo ou /skip")
+        
+        # Mostra o preço detectado (De/Por) e permite editar
+        curr = user_steps[message.chat.id].get("detected_price", "N/A")
+        msg = bot.reply_to(message, 
+                           f"💰 **Preço da Oferta**\n"
+                           f"Detectado: `{curr}`\n\n"
+                           "Digite para corrigir ou /skip para usar o detectado.", 
+                           parse_mode="Markdown")
         bot.register_next_step_handler(msg, step_price)
 
 def step_price(message):
     txt = message.text
+    # Se o usuário digitar algo, substitui o preço automático
     if txt != "/skip" and message.chat.id in user_steps:
-        user_steps[message.chat.id]["original_price"] = txt
+        user_steps[message.chat.id]["detected_price"] = txt
+    
     msg = bot.reply_to(message, "🎥 **Vídeo?** (Envie ou /skip)")
     bot.register_next_step_handler(message, step_video)
 
@@ -209,8 +236,9 @@ def step_video(message):
     if not data: return
 
     headline = data.get('custom_msg', '').upper()
-    title = f"❄️ {data['title']}"
-    price = f"🔥 {data['original_price']}" if data.get('original_price') else "🔥 VER PREÇO NO SITE"
+    title = f"📦 {data['title']}"
+    # Usa o preço que veio do scraper ou o que o usuário editou
+    price = f"🔥 {data['detected_price']}" 
     coupon = f"\n🎟 CUPOM: {data['coupon']}" if data.get('coupon') else ""
     link = f"\n🔗 {data['final_link']}"
     
@@ -232,11 +260,11 @@ def step_video(message):
 
 # --- STARTUP ---
 def set_webhook():
-    time.sleep(3)
+    time.sleep(2)
     bot.remove_webhook()
     time.sleep(1)
-    s = bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}")
-    print(f"✅ Webhook Configurado: {s}", flush=True)
+    bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}")
+    print("✅ Webhook OK.", flush=True)
 
 t = Thread(target=set_webhook)
 t.start()
