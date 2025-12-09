@@ -7,7 +7,6 @@ import time
 import logging
 import requests
 import re
-import cloudscraper
 from bs4 import BeautifulSoup
 
 # --- CONFIGURAÇÃO DE LOGS ---
@@ -31,7 +30,7 @@ user_steps = {}
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# --- FUNÇÕES DE EXTRAÇÃO ---
+# --- FUNÇÕES DE EXTRAÇÃO BLINDADAS ---
 def format_price(value):
     try:
         val = float(value)
@@ -40,68 +39,86 @@ def format_price(value):
         return value
 
 def get_ml_data(url):
-    print(f"🔎 Iniciando Scraping: {url}", flush=True)
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'mobile': False})
+    print(f"🔎 Scraping: {url}", flush=True)
     
+    # Headers de navegador real para evitar bloqueio
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.google.com/"
+    }
+
     data = {
         "title": "Oferta Imperdível", 
-        "price_text": "Ver no site",
-        "image_url": None # Campo novo para a imagem
+        "price_text": "Ver no site", # Valor padrão caso falhe
+        "image_url": None
     }
     
     try:
-        resp = scraper.get(url, timeout=10)
+        # Timeout curto (5s) para não travar o bot se o ML bloquear
+        resp = requests.get(url, headers=headers, timeout=5)
+        
+        if resp.status_code != 200:
+            print(f"⚠️ Status Code {resp.status_code}. Usando dados padrão.", flush=True)
+            return data
+
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. TÍTULO
-        title = soup.find("h1", class_="ui-pdp-title")
-        if title: data["title"] = title.text.strip()
+        # --- 1. TÍTULO (Via Meta Tag - Mais seguro) ---
+        meta_title = soup.find("meta", property="og:title")
+        if meta_title:
+            # Limpa o " | Mercado Livre" do final
+            clean_title = meta_title["content"].split(" | ")[0]
+            data["title"] = clean_title
+        else:
+            h1 = soup.find("h1", class_="ui-pdp-title")
+            if h1: data["title"] = h1.text.strip()
         
-        # 2. PREÇOS (Novo e Antigo)
-        new_price = None
-        price_meta = soup.find("meta", property="product:price:amount")
-        if price_meta: new_price = format_price(price_meta["content"])
-            
-        old_price = None
-        # Tenta diferentes classes para o preço riscado
-        old_price_tag = soup.find("s", class_="andes-money-amount--previous") or \
-                        soup.find("s", class_="ui-pdp-price__original-value")
-            
-        if old_price_tag:
-            old_price = old_price_tag.get_text(separator=" ", strip=True)
-            old_price = " ".join(old_price.split())
+        # --- 2. IMAGEM (Via Meta Tag - Infalível) ---
+        meta_image = soup.find("meta", property="og:image")
+        if meta_image:
+            data["image_url"] = meta_image["content"]
+            print(f"🖼️ Imagem detectada: {data['image_url']}", flush=True)
 
+        # --- 3. PREÇOS (Tentativa Otimizada) ---
+        new_price = None
+        # Tenta meta tag de preço primeiro
+        meta_price = soup.find("meta", property="product:price:amount")
+        if meta_price:
+            new_price = format_price(meta_price["content"])
+        
+        # Se não achou meta, tenta classes comuns
+        if not new_price:
+            price_tag = soup.find("span", class_="andes-money-amount__fraction")
+            if price_tag: new_price = f"R$ {price_tag.text}"
+
+        # Tenta achar preço antigo (riscado)
+        old_price = None
+        old_price_tag = soup.find("s", class_="andes-money-amount--previous")
+        if old_price_tag:
+            # Pega o texto limpo
+            old_price = old_price_tag.get_text(separator=" ", strip=True)
+            old_price = " ".join(old_price.split()) # Remove espaços extras
+
+        # Monta texto final
         if old_price and new_price:
             data["price_text"] = f"DE {old_price} | POR {new_price}"
         elif new_price:
             data["price_text"] = f"{new_price}"
-        else:
-            data["price_text"] = "CONFIRA NO SITE"
-
-        # --- 5. EXTRAÇÃO DA IMAGEM PRINCIPAL (NOVO) ---
-        # Tenta encontrar a imagem principal da galeria
-        image_tag = soup.find("img", class_="ui-pdp-image")
         
-        if image_tag:
-            # O ML às vezes usa lazy loading, então a URL real pode estar em 'data-src'
-            # Preferimos 'data-src', se não tiver, pegamos 'src'
-            img_url = image_tag.get("data-src") or image_tag.get("src")
-            if img_url and img_url.startswith("http"):
-                data["image_url"] = img_url
-                print(f"🖼️ Imagem encontrada: {img_url}", flush=True)
-
-        print(f"✅ Scraping concluído: {data}", flush=True)
+        print(f"✅ Dados finais: {data}", flush=True)
         return data
 
     except Exception as e:
-        print(f"❌ Erro Scraping: {e}", flush=True)
-        return data
+        print(f"❌ Erro Scraping (Bot não vai parar): {e}", flush=True)
+        return data # Retorna o padrão para não travar
 
 def generate_affiliate_link(url, tag):
     final_url = url
     if "/sec/" in url or "mercado.li" in url or "bit.ly" in url:
         try:
-            resp = requests.get(url, allow_redirects=True, timeout=10)
+            resp = requests.get(url, allow_redirects=True, timeout=5)
             final_url = resp.url
         except: pass
 
@@ -111,10 +128,11 @@ def generate_affiliate_link(url, tag):
         clean_id = match.group(1).replace("-", "")
         clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
     
-    api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": tag, "urls": [clean_link]}
+    # Tenta API, se falhar ou demorar, faz manual
     try:
-        r = requests.post(api_url, json=payload, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
+        payload = {"tag": tag, "urls": [clean_link]}
+        r = requests.post(api_url, json=payload, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
         if r.status_code == 200:
             js = r.json()
             if "links" in js and js["links"]: return js["links"][0]["url"]
@@ -124,7 +142,7 @@ def generate_affiliate_link(url, tag):
 
 # --- ROTAS FLASK ---
 @app.route('/')
-def home(): return "🤖 Bot V15 - Com Imagens Ativo!"
+def home(): return "🤖 Bot V16 - Anti-Block Ativo!"
 
 @app.route(f'/{TOKEN}', methods=['POST'])
 def process_webhook():
@@ -152,24 +170,25 @@ def handle_text_messages(message):
     text = message.text.strip()
     
     if "mercadolivre" in text or "mercado.li" in text:
-        msg = bot.reply_to(message, "⏳ **Analisando Oferta e Imagem...**", parse_mode="Markdown")
+        msg = bot.reply_to(message, "⏳ **Lendo link...**", parse_mode="Markdown")
+        
+        # Roda scraping
+        product_data = get_ml_data(text)
+        aff_link = generate_affiliate_link(text, AFFILIATE_TAG)
+        
+        user_steps[message.chat.id] = {
+            "title": product_data.get("title", "Oferta"),
+            "detected_price": product_data.get("price_text"),
+            "image_url": product_data.get("image_url"),
+            "final_link": aff_link,
+            "raw_link": text
+        }
+        
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("📢 Geral", callback_data="grp_geral"), InlineKeyboardButton("👶 Mãe", callback_data="grp_mae"))
+        markup.row(InlineKeyboardButton("🏠 Util", callback_data="grp_util"), InlineKeyboardButton("❌ Cancelar", callback_data="cancel"))
+        
         try:
-            product_data = get_ml_data(text)
-            aff_link = generate_affiliate_link(text, AFFILIATE_TAG)
-            
-            # Armazena os dados INCLUINDO A IMAGEM
-            user_steps[message.chat.id] = {
-                "title": product_data.get("title", "Oferta"),
-                "detected_price": product_data.get("price_text"),
-                "image_url": product_data.get("image_url"), # Guarda a URL da imagem
-                "final_link": aff_link,
-                "raw_link": text
-            }
-            
-            markup = InlineKeyboardMarkup()
-            markup.row(InlineKeyboardButton("📢 Geral", callback_data="grp_geral"), InlineKeyboardButton("👶 Mãe", callback_data="grp_mae"))
-            markup.row(InlineKeyboardButton("🏠 Util", callback_data="grp_util"), InlineKeyboardButton("❌ Cancelar", callback_data="cancel"))
-            
             bot.edit_message_text(
                 f"📦 **{user_steps[message.chat.id]['title']}**\n"
                 f"💰 **{user_steps[message.chat.id]['detected_price']}**\n\n"
@@ -180,7 +199,10 @@ def handle_text_messages(message):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            bot.edit_message_text(f"❌ Erro: {e}", chat_id=message.chat.id, message_id=msg.message_id)
+            # Fallback se der erro na edição (ex: texto muito longo)
+            bot.reply_to(message, "⚠️ Erro ao formatar msg, tente novamente.")
+            print(f"Erro edit: {e}")
+
     else:
         bot.reply_to(message, "Mande um link do ML.")
 
@@ -216,15 +238,14 @@ def step_coupon(message):
     if message.chat.id in user_steps:
         user_steps[message.chat.id]["coupon"] = txt
         curr = user_steps[message.chat.id].get("detected_price", "N/A")
-        msg = bot.reply_to(message, f"💰 **Preço?** (Atual: {curr})\nDigite novo ou /skip")
+        msg = bot.reply_to(message, f"💰 **Preço?** (Atual: `{curr}`)\nDigite novo ou /skip", parse_mode="Markdown")
         bot.register_next_step_handler(msg, step_price)
 
 def step_price(message):
     txt = message.text
     if txt != "/skip" and message.chat.id in user_steps:
         user_steps[message.chat.id]["detected_price"] = txt
-    
-    msg = bot.reply_to(message, "🎥 **Mídia Manual?** (Envie Foto/Vídeo ou /skip para usar a do site)")
+    msg = bot.reply_to(message, "🎥 **Mídia Manual?** (Envie ou /skip)")
     bot.register_next_step_handler(message, step_video)
 
 def step_video(message):
@@ -237,29 +258,21 @@ def step_video(message):
     coupon = f"\n🎟 CUPOM: {data['coupon']}" if data.get('coupon') else ""
     link = f"\n🔗 {data['final_link']}"
     
-    # Usa HTML para poder formatar e usar links
     final_text = f"<b>{headline}</b>\n\n{title}\n\n{price}{coupon}\n{link}"
     target = data['target_id']
     scraped_image = data.get('image_url')
     
     try:
-        # LÓGICA DE ENVIO INTELIGENTE
-        # 1. Prioridade: Mídia enviada manualmente agora
         if message.content_type == 'video':
             bot.send_video(target, message.video.file_id, caption=final_text, parse_mode="HTML")
         elif message.content_type == 'photo':
             bot.send_photo(target, message.photo[-1].file_id, caption=final_text, parse_mode="HTML")
-        
-        # 2. Se deu /skip E temos imagem raspada do site
         elif scraped_image and message.text == "/skip":
-             print(f"📤 Enviando com imagem do site: {scraped_image}", flush=True)
              bot.send_photo(target, scraped_image, caption=final_text, parse_mode="HTML")
-             
-        # 3. Último caso: Texto puro (se não tem mídia manual nem imagem no site)
         else:
             bot.send_message(target, final_text, disable_web_page_preview=False, parse_mode="HTML")
             
-        bot.reply_to(message, "✅ **Postado com sucesso!**")
+        bot.reply_to(message, "✅ **Postado!**")
     except Exception as e:
         bot.reply_to(message, f"❌ Erro envio: {e}")
     
