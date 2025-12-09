@@ -1,240 +1,203 @@
 import os
-import re
-import asyncio
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
 from threading import Thread
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.tl.types import MessageEntityTextUrl
-import requests
-import sys
-import logging
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+import time
 
-# Configura logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+# Importa nossas ferramentas
+from link_utils import get_ml_data, generate_affiliate_link
 
 # --- CONFIGURAÇÕES ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH")
-SESSION_STRING = os.environ.get("SESSION_STRING")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID") # Seu ID para segurança
 AFFILIATE_TAG = "tepa6477885"
-MY_SOCIAL_HANDLE = "tepa6477885"
 
-# CANAL DE DESTINO
-DEST_ENV = os.environ.get("DESTINATION_CHANNEL", "")
-try:
-    if DEST_ENV.startswith("-"):
-        DESTINATION_CHANNEL = int(DEST_ENV)
-    else:
-        DESTINATION_CHANNEL = DEST_ENV
-except:
-    DESTINATION_CHANNEL = DEST_ENV
+# IDs dos Grupos (Configure no Render ou coloque direto aqui se souber)
+GROUPS = {
+    "geral": os.getenv("GROUP_GERAL"),
+    "mae": os.getenv("GROUP_MAE"),
+    "util": os.getenv("GROUP_UTIL")
+}
 
-# LISTA DE CANAIS PERMITIDOS
-ALLOWED_CHATS = [
-    -1002026298205, # Promozone
-]
+# Estado temporário para guardar as respostas (Passo a passo)
+# Estrutura: {chat_id: {'link': '...', 'group': '...', 'msg': '...', 'cupom': '...'}}
+user_steps = {}
 
-# --- FLASK ---
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# --- WEB SERVER (PING) ---
 @app.route('/')
 def home():
-    return "🤖 Sniper Bot V13 - Surgical URL Clean"
+    return "🤖 Bot Publicador Ativo!"
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+# --- AJUDA PARA DESCOBRIR IDS ---
+@bot.message_handler(commands=['ids'])
+def get_id(message):
+    bot.reply_to(message, f"🆔 ID deste chat: `{message.chat.id}`", parse_mode="Markdown")
 
-# --- FUNÇÕES AUXILIARES ---
-def get_all_links(message):
-    urls = set()
-    text = message.text or ""
-    regex_links = re.findall(r'(https?://[^\s]+)', text)
-    for url in regex_links:
-        urls.add(url)
-    if message.entities:
-        for entity in message.entities:
-            if isinstance(entity, MessageEntityTextUrl):
-                urls.add(entity.url)
-    return list(urls)
+# --- PASSO 1: RECEBER O LINK ---
+@bot.message_handler(func=lambda m: True)
+def start_publishing(message):
+    # Segurança: Só aceita você
+    if str(message.from_user.id) != str(ADMIN_ID):
+        return # Ignora estranhos
 
-def hijack_social_url(url):
-    """
-    Substitui cirurgicamente o dono da loja social e o parâmetro de afiliado.
-    """
-    try:
-        parsed = urlparse(url)
-        
-        # 1. Troca o caminho (Path) -> /social/novo_dono
-        path_parts = parsed.path.split('/')
-        new_path_parts = []
-        for part in path_parts:
-            # Se for o nome do concorrente (logo depois de social), troca
-            if 'social' in new_path_parts:
-                new_path_parts.append(MY_SOCIAL_HANDLE)
-            else:
-                new_path_parts.append(part)
-        
-        # Reconstrói o caminho se a lógica acima falhar (regex fallback)
-        new_path = "/".join(new_path_parts)
-        if MY_SOCIAL_HANDLE not in new_path:
-             new_path = re.sub(r'/social/[^/]+', f'/social/{MY_SOCIAL_HANDLE}', parsed.path)
-
-        # 2. Troca os parâmetros (Query) -> matt_word=minha_tag
-        query_params = parse_qs(parsed.query)
-        query_params['matt_word'] = [AFFILIATE_TAG] # Força sua tag
-        
-        # Remove ferramentas de rastreio de terceiros se quiser
-        if 'matt_tool' in query_params:
-            del query_params['matt_tool']
-
-        new_query = urlencode(query_params, doseq=True)
-        
-        # 3. Reconstrói a URL final
-        new_url = urlunparse((parsed.scheme, parsed.netloc, new_path, parsed.params, new_query, parsed.fragment))
-        return new_url
-        
-    except Exception as e:
-        print(f"   ⚠️ Erro no Hijack: {e}. Usando fallback simples.", flush=True)
-        # Fallback bruto se o parser falhar
-        return f"https://www.mercadolivre.com.br/social/{MY_SOCIAL_HANDLE}?matt_word={AFFILIATE_TAG}"
-
-def extract_clean_ml_link(dirty_url):
-    final_url = dirty_url
+    text = message.text.strip()
     
-    # 1. Resolve redirecionamentos
-    if "/sec/" in dirty_url or "mercado.li" in dirty_url or "bit.ly" in dirty_url:
-        print(f"   🕵️ Resolvendo: {dirty_url}...", flush=True)
-        try:
-            session = requests.Session()
-            session.headers.update({"User-Agent": "Mozilla/5.0"})
-            resp = session.get(dirty_url, allow_redirects=True, timeout=10, stream=True)
-            final_url = resp.url
-        except:
-            pass
+    # Verifica se é link do ML
+    if "mercadolivre" in text or "mercado.li" in text:
+        msg = bot.reply_to(message, "🔎 **Analisando link e extraindo dados...**", parse_mode="Markdown")
+        
+        # 1. Extrai dados e Gera Link
+        product_data = get_ml_data(text)
+        aff_link = generate_affiliate_link(text, AFFILIATE_TAG)
+        
+        # Salva no estado
+        user_steps[message.chat.id] = {
+            "title": product_data["title"],
+            "original_price": product_data.get("price"), # Preço que o scraper achou
+            "final_link": aff_link,
+            "raw_link": text
+        }
+        
+        # 2. Pergunta o Grupo
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("📢 Promoções Gerais", callback_data="grp_geral"))
+        markup.row(InlineKeyboardButton("👶 Mãe e Bebê", callback_data="grp_mae"))
+        markup.row(InlineKeyboardButton("🏠 Utilidades", callback_data="grp_util"))
+        markup.row(InlineKeyboardButton("❌ Cancelar", callback_data="cancel"))
+        
+        bot.edit_message_text(
+            f"📦 **Produto:** {product_data['title']}\n"
+            f"💰 **Preço Detectado:** {product_data['price']}\n\n"
+            "**Onde vamos publicar?** 👇",
+            chat_id=message.chat.id,
+            message_id=msg.message_id,
+            reply_markup=markup,
+            parse_mode="Markdown"
+        )
 
-    # 2. TENTA EXTRAIR ID DO PRODUTO (Prioridade Máxima)
-    match = re.search(r'(MLB-?\d+)', final_url)
-    if match:
-        clean_id = match.group(1).replace("-", "")
-        clean_link = f"https://www.mercadolivre.com.br/p/{clean_id}"
-        print(f"   ✨ Produto MLB encontrado: {clean_id}", flush=True)
-        return clean_link
-    
-    # 3. FALLBACK: SEQUESTRO DE LINK SOCIAL
-    if "/social/" in final_url:
-        print("   🔄 Link Social detectado. Realizando Hijack...", flush=True)
-        new_social = hijack_social_url(final_url)
-        print(f"   ✅ URL Social Dominada: {new_social}", flush=True)
-        return new_social
-
-    # 4. Fallback final
-    return final_url.split("?")[0]
-
-def convert_link(url):
-    clean_url = extract_clean_ml_link(url)
-    
-    if "mercadolivre" not in clean_url and "mercado.li" not in clean_url:
-        return url
-
-    # Se já fizemos o hijack social, retorna direto
-    if "/social/" in clean_url and MY_SOCIAL_HANDLE in clean_url:
-        return clean_url
-
-    # Se é link de produto, tenta API oficial
-    api_url = "https://www.mercadolivre.com.br/afiliados/api/linkbuilder/meli"
-    payload = {"tag": AFFILIATE_TAG, "urls": [clean_url]}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    try:
-        r = requests.post(api_url, json=payload, headers=headers, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, dict) and "links" in data and len(data["links"]) > 0:
-                print("   💰 Link Afiliado API Gerado!", flush=True)
-                return data["links"][0]["url"]
-    except Exception as e:
-        print(f"   [ERRO API] {e}", flush=True)
-    
-    return f"{clean_url}?matt_word={AFFILIATE_TAG}"
-
-# --- ROBÔ TELEGRAM ---
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-
-@client.on(events.NewMessage())
-async def handler(event):
-    if event.chat_id not in ALLOWED_CHATS:
+# --- PASSO 2: ESCOLHER GRUPO ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith("grp_") or call.data == "cancel")
+def callback_group(call):
+    if call.data == "cancel":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        user_steps.pop(call.message.chat.id, None)
         return
 
-    print(f"[NOVA MENSAGEM] Origem Aceita: {event.chat_id}", flush=True)
-
-    urls = get_all_links(event.message)
-    ml_urls = [u for u in urls if "mercadolivre.com" in u or "mercado.li" in u]
+    group_key = call.data.replace("grp_", "")
+    target_id = GROUPS.get(group_key)
     
-    if not ml_urls:
+    if not target_id:
+        bot.answer_callback_query(call.id, "❌ ID desse grupo não configurado!")
         return
 
-    print(f"✅ OFERTA ML DETECTADA! ({len(ml_urls)} links)", flush=True)
+    # Salva grupo escolhido
+    user_steps[call.message.chat.id]["target_id"] = target_id
     
-    main_link = ml_urls[0]
-    aff_link = convert_link(main_link)
-    
-    # Limpa texto original
-    original_text = event.message.text or "Confira!"
-    for u in ml_urls:
-        original_text = original_text.replace(u, "") # Remove a URL antiga do texto
-    
-    # NOVA LEGENDA COM LINK CLICÁVEL (HTML)
-    new_caption = (
-        f"{original_text.strip()}\n\n"
-        f"🔥 <b>OFERTA DETECTADA</b>\n"
-        f"👇 <b>CLIQUE PARA COMPRAR:</b>\n"
-        f"➡️ <a href='{aff_link}'>ACESSAR OFERTA NO SITE</a>"
+    # Pergunta Mensagem Adicional
+    msg = bot.edit_message_text(
+        "📝 **Digite a Headline (Título Chamativo)**\n"
+        "Ex: _VAI TE SALVAR NO CALOR_\n\n"
+        "Ou digite /skip para deixar em branco.",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="Markdown"
     )
+    bot.register_next_step_handler(msg, step_get_message)
+
+# --- PASSO 3: MENSAGEM ADICIONAL ---
+def step_get_message(message):
+    txt = message.text
+    if txt == "/skip": txt = ""
+    
+    user_steps[message.chat.id]["custom_msg"] = txt
+    
+    msg = bot.reply_to(message, 
+        "🎟 **Tem Cupom?** Digite o código.\n"
+        "Ex: `DOMINGOU`\n\n"
+        "Ou digite /skip se não tiver.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, step_get_coupon)
+
+# --- PASSO 4: CUPOM ---
+def step_get_coupon(message):
+    txt = message.text
+    if txt == "/skip": txt = None
+    
+    user_steps[message.chat.id]["coupon"] = txt
+    
+    # Pergunta PREÇO (Opcional editar o que o scraper achou)
+    detected = user_steps[message.chat.id].get("original_price", "Não detectado")
+    msg = bot.reply_to(message, 
+        f"💰 **Preço da Oferta**\n"
+        f"Detectado: {detected}\n\n"
+        "Digite o valor correto (Ex: `R$ 1.200`) ou /skip para usar o detectado.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(msg, step_get_price)
+
+# --- PASSO 5: PREÇO ---
+def step_get_price(message):
+    txt = message.text
+    if txt != "/skip":
+        user_steps[message.chat.id]["original_price"] = txt
+    
+    msg = bot.reply_to(message,
+        "🎥 **Tem Vídeo?**\n"
+        "Envie o arquivo de vídeo agora, ou digite /skip para enviar sem vídeo.",
+        parse_mode="Markdown"
+    )
+    bot.register_next_step_handler(message, step_get_video)
+
+# --- PASSO 6: VÍDEO E DISPARO FINAL ---
+def step_get_video(message):
+    data = user_steps.get(message.chat.id)
+    if not data: return # Erro de estado
+
+    # Monta a Mensagem Final
+    # Padrão solicitado:
+    # HEADLINE
+    # ❄️ Título
+    # 🔥 Preço
+    # 🎟 Cupom
+    # 🔗 Link
+    
+    headline = data['custom_msg'].upper() if data['custom_msg'] else ""
+    title = f"📦 {data['title']}"
+    price = f"🔥 {data['original_price']}" if data['original_price'] else "🔥 VER PREÇO NO SITE"
+    coupon = f"\n🎟 CUPOM: {data['coupon']}" if data['coupon'] else ""
+    link = f"\n🔗 {data['final_link']}"
+    
+    final_text = f"{headline}\n\n{title}\n\n{price}{coupon}\n{link}"
+    
+    target_group = data['target_id']
     
     try:
-        print(f"   -> Enviando...", flush=True)
-        if event.message.media:
-            await client.send_file(
-                DESTINATION_CHANNEL, 
-                event.message.media, 
-                caption=new_caption, 
-                parse_mode="html"
-            )
+        # Envia para o Grupo
+        if message.content_type == 'video':
+            bot.send_video(target_group, message.video.file_id, caption=final_text)
+        elif message.content_type == 'photo':
+            bot.send_photo(target_group, message.photo[-1].file_id, caption=final_text)
         else:
-            await client.send_message(
-                DESTINATION_CHANNEL, 
-                new_caption, 
-                link_preview=True, 
-                parse_mode="html"
-            )
-        print("🚀 SUCESSO!", flush=True)
+            bot.send_message(target_group, final_text, disable_web_page_preview=False)
+            
+        bot.reply_to(message, "✅ **Postado com Sucesso!**")
+        
     except Exception as e:
-        print(f"❌ ERRO AO POSTAR: {e}", flush=True)
+        bot.reply_to(message, f"❌ Erro ao postar: {e}")
+        
+    # Limpa estado
+    user_steps.pop(message.chat.id, None)
 
-# --- STARTUP ---
-def start_telethon_thread():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    async def main_telethon_logic():
-        print("--- TENTANDO CONECTAR (ASYNC) ---", flush=True)
-        try:
-            await client.connect()
-            if not await client.is_user_authorized():
-                print("\n❌❌❌ ERRO: SESSÃO INVÁLIDA ❌❌❌", flush=True)
-                return
-            print("--- ✅ CONECTADO E MONITORANDO ---", flush=True)
-            await client.run_until_disconnected()
-        except Exception as e:
-            print(f"❌ ERRO CRÍTICO NO CLIENTE: {e}", flush=True)
-    loop.run_until_complete(main_telethon_logic())
+# --- INICIALIZAÇÃO ---
+def run_bot():
+    bot.infinity_polling()
 
-t = Thread(target=start_telethon_thread)
-t.daemon = True
-t.start()
-
-if __name__ == '__main__':
+if __name__ == "__main__":
+    t = Thread(target=run_bot)
+    t.start()
     app.run(host='0.0.0.0', port=8080)
