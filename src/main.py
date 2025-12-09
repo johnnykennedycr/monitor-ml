@@ -158,12 +158,21 @@ def step_get_video(message):
         
     user_steps.pop(message.chat.id, None)
 
-# --- INICIALIZAÇÃO ---
+# --- INICIALIZAÇÃO ROBUSTA ---
 def run_bot():
-    bot.infinity_polling()
+    print("--- INICIANDO BOT (Polling) ---")
+    while True:
+        try:
+            # skip_pending=True ignora mensagens velhas acumuladas que podem travar o bot
+            bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
+        except Exception as e:
+            print(f"❌ Erro no Polling: {e}")
+            print("⏳ Aguardando 10s para reconectar...")
+            time.sleep(10)
 
 # Thread global para o Gunicorn pegar
 t = Thread(target=run_bot)
+t.daemon = True
 t.start()
 
 if __name__ == "__main__":
