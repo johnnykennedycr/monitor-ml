@@ -290,8 +290,8 @@ def step_video(message):
     if not data: return
 
     headline = data.get('custom_msg', '').upper()
-    title = f"❄️ {data['title']}"
-    price = f"🔥 {data['detected_price']}"
+    title = f" {data['title']}"
+    price = f"🔥R$ {data['detected_price']}"
     coupon = f"\n🎟 CUPOM: {data['coupon']}" if data.get('coupon') else ""
     link = f"\n🔗 {data['final_link']}"
     
